@@ -1,0 +1,28 @@
+table: raw_merchants
+description: One row per merchant. Static reference table.
+owner: synthetic_data_agent
+entity_keys: [merchant_id]
+columns:
+  merchant_id:       {type: varchar, nullable: false, notes: primary key}
+  merchant_name:     {type: varchar, nullable: false}
+  merchant_category: {type: varchar, nullable: false}
+  country_code:      {type: char(2), nullable: false}
+  is_online:         {type: boolean, nullable: false}
+  risk_tier:         {type: varchar, nullable: false, values: [low, medium, high]}
+  event_timestamp:   {type: timestamptz, nullable: false}
+  ingestion_timestamp: {type: timestamptz, nullable: false}
+
+table: fraud_labels
+description: Authoritative fraud outcome keyed on transaction_id.
+owner: synthetic_data_agent
+entity_keys: [transaction_id]
+columns:
+  transaction_id:    {type: varchar, nullable: false, notes: FK to raw_transactions}
+  is_fraud:          {type: boolean, nullable: false}
+  fraud_type:        {type: varchar, nullable: true}
+  label_source:      {type: varchar, nullable: false, values: [synthetic, manual, model]}
+  label_timestamp:   {type: timestamptz, nullable: false}
+  ingestion_timestamp: {type: timestamptz, nullable: false}
+data_quality:
+  - not_null: [transaction_id, is_fraud]
+  - unique: [transaction_id]

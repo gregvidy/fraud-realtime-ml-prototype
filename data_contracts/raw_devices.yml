@@ -1,0 +1,22 @@
+table: raw_devices
+description: >
+  One row per device registration event (a user can register multiple devices;
+  a device can appear across users — shared device = fraud signal).
+owner: synthetic_data_agent
+entity_keys: [device_id, user_id]
+timestamp_semantics:
+  event_timestamp: time the device was first seen for the user
+  ingestion_timestamp: time the row landed in Postgres
+columns:
+  device_event_id:   {type: bigserial, nullable: false, notes: surrogate primary key}
+  device_id:         {type: varchar, nullable: false}
+  user_id:           {type: varchar, nullable: false}
+  device_fingerprint: {type: varchar, nullable: true}
+  platform:          {type: varchar, nullable: true, values: [iOS, Android, Web, Desktop]}
+  os_version:        {type: varchar, nullable: true}
+  ip_address:        {type: inet, nullable: true}
+  country_code:      {type: char(2), nullable: true}
+  event_timestamp:   {type: timestamptz, nullable: false}
+  ingestion_timestamp: {type: timestamptz, nullable: false}
+data_quality:
+  - not_null: [device_id, user_id, event_timestamp]

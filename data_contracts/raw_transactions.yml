@@ -1,0 +1,34 @@
+table: raw_transactions
+description: >
+  One row per payment transaction attempt. Primary source for all
+  velocity and amount-based fraud features.
+owner: synthetic_data_agent
+entity_keys:
+  - transaction_id
+  - user_id
+  - device_id
+  - merchant_id
+timestamp_semantics:
+  event_timestamp: time the transaction was initiated by the user
+  ingestion_timestamp: time the row landed in Postgres
+columns:
+  transaction_id:    {type: varchar, nullable: false, notes: UUID-format primary key}
+  user_id:           {type: varchar, nullable: false}
+  device_id:         {type: varchar, nullable: false}
+  merchant_id:       {type: varchar, nullable: false}
+  amount:            {type: numeric, nullable: false, notes: in local currency, positive}
+  currency:          {type: char(3), nullable: false, notes: ISO 4217}
+  payment_method:    {type: varchar, nullable: false, values: [card, wallet, bank_transfer, crypto]}
+  country_code:      {type: char(2), nullable: false, notes: ISO 3166-1 alpha-2}
+  ip_address:        {type: inet, nullable: true}
+  is_international:  {type: boolean, nullable: false}
+  txn_status:        {type: varchar, nullable: false, values: [success, decline, pending]}
+  decline_reason:    {type: varchar, nullable: true}
+  local_hour:        {type: smallint, nullable: true, notes: 0–23}
+  event_timestamp:   {type: timestamptz, nullable: false}
+  ingestion_timestamp: {type: timestamptz, nullable: false}
+data_quality:
+  - not_null: [transaction_id, user_id, device_id, merchant_id, amount, currency, txn_status]
+  - unique: [transaction_id]
+  - accepted_values: {txn_status: [success, decline, pending]}
+  - range: {amount: {min: 0.01}}

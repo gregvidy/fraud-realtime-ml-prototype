@@ -1,0 +1,20 @@
+table: raw_users
+description: One row per registered user account.
+owner: synthetic_data_agent
+entity_keys: [user_id]
+timestamp_semantics:
+  event_timestamp: time the user registered
+  ingestion_timestamp: time the row landed in Postgres
+columns:
+  user_id:           {type: varchar, nullable: false, notes: primary key}
+  email:             {type: varchar, nullable: false}
+  phone:             {type: varchar, nullable: true}
+  country_code:      {type: char(2), nullable: false}
+  signup_date:       {type: date, nullable: false}
+  account_type:      {type: varchar, nullable: false, values: [standard, premium, business]}
+  is_verified:       {type: boolean, nullable: false}
+  event_timestamp:   {type: timestamptz, nullable: false}
+  ingestion_timestamp: {type: timestamptz, nullable: false}
+data_quality:
+  - not_null: [user_id, email, country_code, signup_date]
+  - unique: [user_id]

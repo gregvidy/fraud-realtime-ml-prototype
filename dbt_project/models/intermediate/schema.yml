@@ -1,0 +1,30 @@
+version: 2
+
+models:
+  - name: int_user_txn_stats
+    description: Per-transaction rolling user stats for offline feature engineering.
+    columns:
+      - name: transaction_id
+        tests: [unique, not_null]
+      - name: user_id
+        tests: [not_null]
+      - name: event_timestamp
+        tests: [not_null]
+
+  - name: int_user_login_stats
+    description: Per-transaction rolling user login failure counts.
+    columns:
+      - name: transaction_id
+        tests: [unique, not_null]
+
+  - name: int_device_stats
+    description: Per-transaction rolling device usage stats.
+    columns:
+      - name: transaction_id
+        tests: [unique, not_null]
+
+  - name: int_merchant_stats
+    description: Per-transaction rolling merchant risk stats.
+    columns:
+      - name: transaction_id
+        tests: [unique, not_null]

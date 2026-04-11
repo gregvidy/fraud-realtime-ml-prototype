@@ -1,0 +1,47 @@
+version: 2
+
+models:
+  - name: fct_user_features
+    description: >
+      Offline user feature table. One row per (transaction_id) with rolling
+      window stats as of that transaction's event_timestamp.
+      Feast entity key: user_id. Timestamp: event_timestamp.
+    columns:
+      - name: transaction_id
+        tests: [unique, not_null]
+      - name: user_id
+        tests: [not_null]
+      - name: event_timestamp
+        tests: [not_null]
+      - name: user_account_age_days
+        tests: [not_null]
+
+  - name: fct_device_features
+    description: >
+      Offline device feature table. One row per transaction.
+      Feast entity key: device_id. Timestamp: event_timestamp.
+    columns:
+      - name: transaction_id
+        tests: [unique, not_null]
+      - name: device_id
+        tests: [not_null]
+
+  - name: fct_merchant_features
+    description: >
+      Offline merchant feature table. One row per transaction.
+      Feast entity key: merchant_id. Timestamp: event_timestamp.
+    columns:
+      - name: transaction_id
+        tests: [unique, not_null]
+      - name: merchant_id
+        tests: [not_null]
+
+  - name: fct_training_dataset
+    description: >
+      Full labelled training dataset joining all feature groups with
+      the fraud label. Used directly by the model training pipeline.
+    columns:
+      - name: transaction_id
+        tests: [unique, not_null]
+      - name: is_fraud
+        tests: [not_null]

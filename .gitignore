@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.env
+venv/
+.venv/
+
+# dbt
+dbt_project/target/
+dbt_project/logs/
+dbt_project/.user.yml
+dbt_project/dbt_packages/
+
+# Feast
+feast_repo/feature_repo/data/
+
+# Models
+models/*.pkl
+models/*.json
+models/*.bin
+
+# Training datasets
+training/datasets/
+
+# Testing
+.pytest_cache/
+htmlcov/
+.coverage
+
+# macOS
+.DS_Store

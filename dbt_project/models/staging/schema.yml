@@ -1,0 +1,42 @@
+version: 2
+
+models:
+  - name: stg_transactions
+    description: Cleaned transactions from raw_transactions.
+    columns:
+      - name: transaction_id
+        tests: [unique, not_null]
+      - name: user_id
+        tests: [not_null]
+      - name: amount
+        tests: [not_null]
+
+  - name: stg_users
+    description: Cleaned users.
+    columns:
+      - name: user_id
+        tests: [unique, not_null]
+
+  - name: stg_devices
+    description: Cleaned device events.
+    columns:
+      - name: device_id
+        tests: [not_null]
+
+  - name: stg_merchants
+    description: Cleaned merchants.
+    columns:
+      - name: merchant_id
+        tests: [unique, not_null]
+
+  - name: stg_login_events
+    description: Cleaned login events.
+    columns:
+      - name: user_id
+        tests: [not_null]
+
+  - name: stg_fraud_labels
+    description: Cleaned fraud labels.
+    columns:
+      - name: transaction_id
+        tests: [unique, not_null]

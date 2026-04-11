@@ -1,0 +1,62 @@
+version: 2
+
+sources:
+  - name: raw
+    description: Raw operational tables loaded by the synthetic data generator.
+    schema: public
+    tables:
+      - name: raw_transactions
+        description: One row per payment transaction attempt.
+        columns:
+          - name: transaction_id
+            tests: [unique, not_null]
+          - name: user_id
+            tests: [not_null]
+          - name: device_id
+            tests: [not_null]
+          - name: merchant_id
+            tests: [not_null]
+          - name: amount
+            tests: [not_null]
+          - name: txn_status
+            tests:
+              - accepted_values:
+                  values: [success, decline, pending]
+          - name: event_timestamp
+            tests: [not_null]
+
+      - name: raw_users
+        description: One row per registered user.
+        columns:
+          - name: user_id
+            tests: [unique, not_null]
+          - name: signup_date
+            tests: [not_null]
+
+      - name: raw_devices
+        description: Device registration events.
+        columns:
+          - name: device_id
+            tests: [not_null]
+          - name: user_id
+            tests: [not_null]
+
+      - name: raw_merchants
+        description: Merchant reference table.
+        columns:
+          - name: merchant_id
+            tests: [unique, not_null]
+
+      - name: raw_login_events
+        description: Login attempt events.
+        columns:
+          - name: user_id
+            tests: [not_null]
+          - name: event_timestamp
+            tests: [not_null]
+
+      - name: fraud_labels
+        description: Authoritative fraud outcome per transaction.
+        columns:
+          - name: transaction_id
+            tests: [unique, not_null]

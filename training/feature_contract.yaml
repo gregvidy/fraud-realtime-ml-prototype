@@ -1,0 +1,177 @@
+# Feature contract for fraud_xgb_v1
+# Defines all model inputs in order, their source, and type.
+# MUST stay in sync with training/train_model.py and app/scoring.py
+
+model_name: fraud_xgb_v1
+model_type: binary_classification
+target: is_fraud
+
+features:
+  # --- Request-time ---
+  - name: txn_amount
+    source: request
+    dtype: float
+
+  - name: is_international
+    source: request
+    dtype: int
+
+  - name: local_hour
+    source: request
+    dtype: int
+
+  # --- Feast offline (user) ---
+  - name: user_account_age_days
+    source: feast_offline
+    feast_view: user_batch_fv
+    dtype: int
+
+  - name: user_is_verified
+    source: feast_offline
+    feast_view: user_batch_fv
+    dtype: int
+
+  - name: user_is_standard_account
+    source: feast_offline
+    feast_view: user_batch_fv
+    dtype: int
+
+  - name: user_txn_count_1d
+    source: feast_offline
+    feast_view: user_batch_fv
+    dtype: int
+
+  - name: user_txn_count_7d
+    source: feast_offline
+    feast_view: user_batch_fv
+    dtype: int
+
+  - name: user_txn_count_30d
+    source: feast_offline
+    feast_view: user_batch_fv
+    dtype: int
+
+  - name: user_txn_amount_sum_1d
+    source: feast_offline
+    feast_view: user_batch_fv
+    dtype: float
+
+  - name: user_txn_amount_sum_7d
+    source: feast_offline
+    feast_view: user_batch_fv
+    dtype: float
+
+  - name: user_txn_amount_sum_30d
+    source: feast_offline
+    feast_view: user_batch_fv
+    dtype: float
+
+  - name: user_avg_ticket_30d
+    source: feast_offline
+    feast_view: user_batch_fv
+    dtype: float
+
+  - name: user_distinct_merchants_30d
+    source: feast_offline
+    feast_view: user_batch_fv
+    dtype: int
+
+  - name: user_distinct_devices_30d
+    source: feast_offline
+    feast_view: user_batch_fv
+    dtype: int
+
+  - name: user_decline_count_7d
+    source: feast_offline
+    feast_view: user_batch_fv
+    dtype: int
+
+  - name: user_failed_logins_7d
+    source: feast_offline
+    feast_view: user_batch_fv
+    dtype: int
+
+  - name: user_failed_logins_1d
+    source: feast_offline
+    feast_view: user_batch_fv
+    dtype: int
+
+  # --- Feast offline (device) ---
+  - name: device_distinct_users_30d
+    source: feast_offline
+    feast_view: device_batch_fv
+    dtype: int
+
+  - name: device_txn_count_7d
+    source: feast_offline
+    feast_view: device_batch_fv
+    dtype: int
+
+  - name: device_txn_count_1d
+    source: feast_offline
+    feast_view: device_batch_fv
+    dtype: int
+
+  - name: device_is_shared_flag
+    source: feast_offline
+    feast_view: device_batch_fv
+    dtype: int
+
+  # --- Feast offline (merchant) ---
+  - name: merchant_is_high_risk
+    source: feast_offline
+    feast_view: merchant_batch_fv
+    dtype: int
+
+  - name: merchant_is_online
+    source: feast_offline
+    feast_view: merchant_batch_fv
+    dtype: int
+
+  - name: merchant_txn_count_30d
+    source: feast_offline
+    feast_view: merchant_batch_fv
+    dtype: int
+
+  - name: merchant_avg_ticket_30d
+    source: feast_offline
+    feast_view: merchant_batch_fv
+    dtype: float
+
+  - name: merchant_fraud_rate_30d
+    source: feast_offline
+    feast_view: merchant_batch_fv
+    dtype: float
+
+  # --- Redis online ---
+  - name: user_txn_count_5m
+    source: redis_online
+    dtype: int
+
+  - name: user_txn_count_10m
+    source: redis_online
+    dtype: int
+
+  - name: user_txn_count_1h
+    source: redis_online
+    dtype: int
+
+  - name: user_txn_amount_sum_10m
+    source: redis_online
+    dtype: float
+
+  - name: user_distinct_merchants_1h
+    source: redis_online
+    dtype: int
+
+  - name: device_txn_count_5m
+    source: redis_online
+    dtype: int
+
+  - name: device_txn_count_10m
+    source: redis_online
+    dtype: int
+
+  - name: user_failed_logins_15m
+    source: redis_online
+    dtype: int
