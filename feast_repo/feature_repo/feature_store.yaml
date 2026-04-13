@@ -3,13 +3,13 @@ registry: data/registry.db
 provider: local
 online_store:
     type: redis
-    connection_string: "${REDIS_HOST:-localhost}:${REDIS_PORT:-6379}"
+    connection_string: "localhost:6379"
 offline_store:
-    type: feast.infra.offline_stores.contrib.postgres_offline_store.postgres.PostgreSQLOfflineStore
-    host: "${POSTGRES_HOST:-localhost}"
+    type: postgres
+    host: localhost
     port: 5432
-    database: "${POSTGRES_DB:-fraud_db}"
+    database: fraud_db
     db_schema: public
-    user: "${POSTGRES_USER:-fraud_user}"
-    password: "${POSTGRES_PASSWORD:-fraud_pass}"
+    user: fraud_user
+    password: fraud_pass
 entity_key_serialization_version: 2
