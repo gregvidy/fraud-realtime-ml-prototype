@@ -19,7 +19,7 @@ clean-targets:
 models:
   fraud_features:
     staging:
-      +materialized: view
+      +materialized: table
     intermediate:
       +materialized: table
     features:
