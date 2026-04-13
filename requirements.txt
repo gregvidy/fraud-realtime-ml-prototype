@@ -1,5 +1,7 @@
 dbt-core==1.8.0
 dbt-postgres==1.8.0
+dbt-adapters==1.1.1
+dbt-common==1.0.4
 feast==0.40.0
 feast[postgres]==0.40.0
 feast[redis]==0.40.0
