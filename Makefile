@@ -17,7 +17,8 @@ help:
 	@echo "  make dbt-run        Run all dbt models"
 	@echo "  make feast-apply    Apply Feast feature definitions"
 	@echo "  make materialize    Materialize offline features to Redis via Feast"
-	@echo "  make train          Train the baseline fraud model"
+	@echo "  make train          Train fraud model (default: training/training_config.yaml)"
+	@echo "  make train CONFIG=training/my_config.yaml  Train with a custom config"
 	@echo "  make start-api      Start the FastAPI scoring service"
 	@echo "  make stream-events  Start the transaction stream simulator"
 	@echo "  make score-test     Send a test scoring request"
@@ -84,7 +85,7 @@ materialize:
 
 train:
 	$(PYTHON) training/build_training_dataset.py
-	$(PYTHON) training/train_model.py
+	$(PYTHON) training/train_model.py $(if $(CONFIG),--config $(CONFIG),)
 	$(PYTHON) training/evaluate_model.py
 
 start-api:

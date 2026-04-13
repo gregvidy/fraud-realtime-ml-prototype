@@ -101,3 +101,24 @@ CREATE TABLE IF NOT EXISTS fraud_labels (
     ingestion_timestamp TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
     created_at          TIMESTAMPTZ     NOT NULL DEFAULT NOW()
 );
+
+-- model_score_log: every inference result, used for model monitoring
+CREATE TABLE IF NOT EXISTS model_score_log (
+    id                  BIGSERIAL       PRIMARY KEY,
+    transaction_id      VARCHAR(64)     NOT NULL,
+    user_id             VARCHAR(64)     NOT NULL,
+    device_id           VARCHAR(64)     NOT NULL,
+    merchant_id         VARCHAR(64)     NOT NULL,
+    fraud_score         NUMERIC(8, 6)   NOT NULL,
+    risk_band           VARCHAR(16)     NOT NULL,
+    is_flagged          BOOLEAN         NOT NULL,
+    model_version       VARCHAR(64)     NOT NULL,
+    feast_offline_ok    BOOLEAN         NOT NULL DEFAULT FALSE,
+    redis_online_ok     BOOLEAN         NOT NULL DEFAULT FALSE,
+    scored_at           TIMESTAMPTZ     NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_score_log_transaction_id ON model_score_log(transaction_id);
+CREATE INDEX IF NOT EXISTS idx_score_log_user_id        ON model_score_log(user_id);
+CREATE INDEX IF NOT EXISTS idx_score_log_scored_at      ON model_score_log(scored_at);
+CREATE INDEX IF NOT EXISTS idx_score_log_model_version  ON model_score_log(model_version);

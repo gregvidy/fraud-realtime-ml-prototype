@@ -1,0 +1,6 @@
+{
+  "dbt.profilesDirOverride": "${workspaceFolder}/dbt_project",
+  "dbt.dbtPythonPathOverride": "/opt/anaconda3/envs/fraud-realtime-ml/bin/python",
+  "dbtPowerUser.dbtCoreIntegration.targetPath": "${workspaceFolder}/dbt_project/target",
+  "dbtPowerUser.projectPath": "${workspaceFolder}/dbt_project"
+}
