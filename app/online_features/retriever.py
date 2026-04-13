@@ -61,17 +61,24 @@ def get_user_online_features(user_id: str, now: float | None = None) -> dict:
     members_10m = _zrange_window(r, txn_key, WINDOW_10M, now)
     members_1h  = _zrange_window(r, txn_key, WINDOW_1H,  now)
 
+    amount_sum_5m  = sum(decode_txn_member(m)[1] for m in members_5m  if ":" in m)
     amount_sum_10m = sum(decode_txn_member(m)[1] for m in members_10m if ":" in m)
+    amount_sum_1h  = sum(decode_txn_member(m)[1] for m in members_1h  if ":" in m)
 
-    merch_1h = _zrange_window(r, merch_key, WINDOW_1H, now)
-    distinct_merchants_1h = len(set(merch_1h))
+    merch_5m  = _zrange_window(r, merch_key, WINDOW_5M,  now)
+    merch_10m = _zrange_window(r, merch_key, WINDOW_10M, now)
+    merch_1h  = _zrange_window(r, merch_key, WINDOW_1H,  now)
 
     return {
-        "user_txn_count_5m":          len(members_5m),
-        "user_txn_count_10m":         len(members_10m),
-        "user_txn_count_1h":          len(members_1h),
-        "user_txn_amount_sum_10m":    round(amount_sum_10m, 4),
-        "user_distinct_merchants_1h": distinct_merchants_1h,
+        "user_txn_count_5m":           len(members_5m),
+        "user_txn_count_10m":          len(members_10m),
+        "user_txn_count_1h":           len(members_1h),
+        "user_txn_amount_sum_5m":      round(amount_sum_5m,  4),
+        "user_txn_amount_sum_10m":     round(amount_sum_10m, 4),
+        "user_txn_amount_sum_1h":      round(amount_sum_1h,  4),
+        "user_distinct_merchants_5m":  len(set(merch_5m)),
+        "user_distinct_merchants_10m": len(set(merch_10m)),
+        "user_distinct_merchants_1h":  len(set(merch_1h)),
     }
 
 
@@ -88,10 +95,12 @@ def get_device_online_features(device_id: str, now: float | None = None) -> dict
 
     members_5m  = _zrange_window(r, dev_key, WINDOW_5M,  now)
     members_10m = _zrange_window(r, dev_key, WINDOW_10M, now)
+    members_1h  = _zrange_window(r, dev_key, WINDOW_1H,  now)
 
     return {
         "device_txn_count_5m":  len(members_5m),
         "device_txn_count_10m": len(members_10m),
+        "device_txn_count_1h":  len(members_1h),
     }
 
 
@@ -103,12 +112,13 @@ def get_user_login_features(user_id: str, now: float | None = None) -> dict:
     r   = _get_redis()
     now = now or time.time()
 
-    key     = user_login_fail_zset(user_id)
-    window  = 15 * 60  # 15 minutes
-    members = _zrange_window(r, key, window, now)
+    key         = user_login_fail_zset(user_id)
+    members_15m = _zrange_window(r, key, 15 * 60,  now)
+    members_1h  = _zrange_window(r, key, WINDOW_1H, now)
 
     return {
-        "user_failed_logins_15m": len(members),
+        "user_failed_logins_15m": len(members_15m),
+        "user_failed_logins_1h":  len(members_1h),
     }
 
 
