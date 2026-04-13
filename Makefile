@@ -1,7 +1,7 @@
 .PHONY: help setup infra-up infra-down seed-data dbt-run feast-apply materialize train start-api stream-events score-test clean
 
 CONDA_ENV := fraud-realtime-ml
-CONDA_PREFIX := /opt/anaconda3/envs/$(CONDA_ENV)
+CONDA_PREFIX := $(shell conda info --base)/envs/$(CONDA_ENV)
 PYTHON := $(CONDA_PREFIX)/bin/python
 DBT := $(CONDA_PREFIX)/bin/dbt
 FEAST := $(CONDA_PREFIX)/bin/feast
@@ -13,8 +13,8 @@ help:
 	@echo "  make setup          Install Python dependencies"
 	@echo "  make infra-up       Start Postgres and Redis via Docker Compose"
 	@echo "  make infra-down     Stop and remove containers"
-	@echo "  make seed-data      Generate synthetic raw data into Postgres"
-	@echo "  make dbt-run        Run all dbt models"
+	@echo "  make seed-data      Generate synthetic raw data into Postgres"	@echo "  make seed-data START_DATE=2024-01-01 END_DATE=2024-12-31  Custom timeframe"
+	@echo "  make seed-data FRAUD_RATE_MIN=0.01 FRAUD_RATE_MAX=0.08   Custom fraud rate range"	@echo "  make dbt-run        Run all dbt models"
 	@echo "  make feast-apply    Apply Feast feature definitions"
 	@echo "  make materialize    Materialize offline features to Redis via Feast"
 	@echo "  make train          Train fraud model (default: training/training_config.yaml)"
@@ -64,7 +64,12 @@ infra-reset:
 
 seed-data:
 	$(PYTHON) simulator/generate_reference_data.py
-	$(PYTHON) simulator/generate_historical_transactions.py
+	$(PYTHON) simulator/generate_historical_transactions.py \
+		$(if $(START_DATE),--start-date $(START_DATE),) \
+		$(if $(END_DATE),--end-date $(END_DATE),) \
+		$(if $(FRAUD_RATE_MIN),--fraud-rate-min $(FRAUD_RATE_MIN),) \
+		$(if $(FRAUD_RATE_MAX),--fraud-rate-max $(FRAUD_RATE_MAX),) \
+		$(if $(SEED),--seed $(SEED),)
 
 dbt-run:
 	cd dbt_project && $(DBT) run --profiles-dir .
