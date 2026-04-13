@@ -1,5 +1,17 @@
 -- stg_transactions.sql
 -- Cleans and casts raw transactions. One row per transaction.
+-- Composite indexes on (user_id, event_timestamp), (device_id, event_timestamp),
+-- and (merchant_id, event_timestamp) are created via post-hook to speed up the
+-- self-joins in intermediate models.
+{{
+    config(
+        post_hook=[
+            "CREATE INDEX IF NOT EXISTS idx_stg_txn_user_ts     ON {{ this }} (user_id, event_timestamp)",
+            "CREATE INDEX IF NOT EXISTS idx_stg_txn_device_ts   ON {{ this }} (device_id, event_timestamp)",
+            "CREATE INDEX IF NOT EXISTS idx_stg_txn_merchant_ts ON {{ this }} (merchant_id, event_timestamp)"
+        ]
+    )
+}}
 
 SELECT
     transaction_id,
