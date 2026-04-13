@@ -78,6 +78,24 @@ SELECT
     merchant_avg_ticket_30d,
     merchant_fraud_rate_30d,
 
+    -- user online
+    user_txn_count_5m,
+    user_txn_count_10m,
+    user_txn_count_1h,
+    user_txn_amount_sum_5m,
+    user_txn_amount_sum_10m,
+    user_txn_amount_sum_1h,
+    user_distinct_merchants_5m,
+    user_distinct_merchants_10m,
+    user_distinct_merchants_1h,
+    user_failed_logins_15m,
+    user_failed_logins_1h,
+
+    -- device online
+    device_txn_count_5m,
+    device_txn_count_10m,
+    device_txn_count_1h,
+
     -- label
     is_fraud
 
