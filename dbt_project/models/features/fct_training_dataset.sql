@@ -68,6 +68,24 @@ final AS (
         mf.merchant_avg_ticket_30d,
         mf.merchant_fraud_rate_30d,
 
+        -- User online features (from fct_user_features)
+        uf.user_txn_count_5m,
+        uf.user_txn_count_10m,
+        uf.user_txn_count_1h,
+        uf.user_txn_amount_sum_5m,
+        uf.user_txn_amount_sum_10m,
+        uf.user_txn_amount_sum_1h,
+        uf.user_distinct_merchants_5m,
+        uf.user_distinct_merchants_10m,
+        uf.user_distinct_merchants_1h,
+        uf.user_failed_logins_15m,
+        uf.user_failed_logins_1h,
+
+        -- Device online features (from fct_device_features)
+        df.device_txn_count_5m,
+        df.device_txn_count_10m,
+        df.device_txn_count_1h,
+
         -- Label
         COALESCE(l.is_fraud, false)::INT        AS is_fraud
 
