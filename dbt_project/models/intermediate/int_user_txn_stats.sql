@@ -1,3 +1,8 @@
+{{ config(
+    materialized='incremental',
+    unique_key='transaction_id'
+) }}
+
 -- int_user_txn_stats.sql
 -- Per-user rolling window transaction statistics, computed as of each
 -- transaction's event_timestamp for point-in-time compatibility.
@@ -6,6 +11,17 @@
 WITH txns AS (
     SELECT * FROM {{ ref('stg_transactions') }}
 ),
+
+{% if is_incremental() %}
+anchor_txns AS (
+    SELECT * FROM txns
+    WHERE event_timestamp > (SELECT MAX(event_timestamp) FROM {{ this }})
+),
+{% else %}
+anchor_txns AS (
+    SELECT * FROM txns
+),
+{% endif %}
 
 user_stats AS (
     SELECT
@@ -70,7 +86,7 @@ user_stats AS (
               AND h.event_timestamp <  t.event_timestamp
         )                                   AS user_decline_count_7d
 
-    FROM txns t
+    FROM anchor_txns t
     JOIN txns h ON h.user_id = t.user_id
     GROUP BY
         t.transaction_id, t.user_id, t.event_timestamp

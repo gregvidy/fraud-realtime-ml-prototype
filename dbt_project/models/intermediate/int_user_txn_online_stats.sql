@@ -1,6 +1,22 @@
+{{ config(
+    materialized='incremental',
+    unique_key='transaction_id'
+) }}
+
 WITH txns AS (
     SELECT * FROM {{ ref('stg_transactions') }}
+),
+
+{% if is_incremental() %}
+anchor_txns AS (
+    SELECT * FROM txns
+    WHERE event_timestamp > (SELECT MAX(event_timestamp) FROM {{ this }})
 )
+{% else %}
+anchor_txns AS (
+    SELECT * FROM txns
+)
+{% endif %}
 
 -- mirrors Redis: user_txn_zset windows
 SELECT
@@ -53,6 +69,6 @@ SELECT
           AND h.event_timestamp <  t.event_timestamp
     ) AS user_distinct_merchants_1h
 
-FROM txns t
+FROM anchor_txns t
 JOIN txns h ON h.user_id = t.user_id
 GROUP BY t.transaction_id, t.user_id, t.event_timestamp

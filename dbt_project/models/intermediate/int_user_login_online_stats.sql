@@ -1,3 +1,8 @@
+{{ config(
+    materialized='incremental',
+    unique_key='transaction_id'
+) }}
+
 -- int_user_login_online_stats.sql
 -- Per-user short-window failed login count for training.
 -- Mirrors Redis get_user_login_features(): user_login_fail_zset window 15m.
@@ -13,6 +18,9 @@ txns AS (
         user_id,
         event_timestamp
     FROM {{ ref('stg_transactions') }}
+    {% if is_incremental() %}
+    WHERE event_timestamp > (SELECT MAX(event_timestamp) FROM {{ this }})
+    {% endif %}
 )
 
 SELECT

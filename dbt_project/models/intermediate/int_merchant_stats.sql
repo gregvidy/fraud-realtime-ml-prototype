@@ -1,3 +1,8 @@
+{{ config(
+    materialized='incremental',
+    unique_key='transaction_id'
+) }}
+
 -- int_merchant_stats.sql
 -- Per-merchant rolling window stats (fraud rate, volume, avg ticket).
 
@@ -16,6 +21,17 @@ txns_with_label AS (
     FROM txns t
     LEFT JOIN labels l USING (transaction_id)
 ),
+
+{% if is_incremental() %}
+anchor_with_label AS (
+    SELECT * FROM txns_with_label
+    WHERE event_timestamp > (SELECT MAX(event_timestamp) FROM {{ this }})
+),
+{% else %}
+anchor_with_label AS (
+    SELECT * FROM txns_with_label
+),
+{% endif %}
 
 merchant_stats AS (
     SELECT
@@ -42,7 +58,7 @@ merchant_stats AS (
             ), 0
         )                               AS merchant_fraud_rate_30d
 
-    FROM txns_with_label t
+    FROM anchor_with_label t
     JOIN txns_with_label h ON h.merchant_id = t.merchant_id
     GROUP BY t.transaction_id, t.merchant_id, t.event_timestamp
 )

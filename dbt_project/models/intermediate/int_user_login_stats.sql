@@ -1,3 +1,8 @@
+{{ config(
+    materialized='incremental',
+    unique_key='transaction_id'
+) }}
+
 -- int_user_login_stats.sql
 -- Per-user failed login counts over rolling windows, computed per transaction.
 
@@ -11,6 +16,9 @@ txns AS (
         user_id,
         event_timestamp
     FROM {{ ref('stg_transactions') }}
+    {% if is_incremental() %}
+    WHERE event_timestamp > (SELECT MAX(event_timestamp) FROM {{ this }})
+    {% endif %}
 ),
 
 login_stats AS (
