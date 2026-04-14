@@ -15,6 +15,11 @@ dbt_project/dbt_packages/
 # Feast
 feast_repo/feature_repo/data/
 
+# DuckDB offline store (binary + parquet data files)
+data/duckdb/*.duckdb
+data/duckdb/*.wal
+data/duckdb/parquet/*.parquet
+
 # Models
 models/*.pkl
 models/*.json
