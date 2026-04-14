@@ -101,3 +101,72 @@ Feedback/retraining loop   C+                No drift detection
 ```
 
 The core ML logic and architecture decisions are solid — it's the **infrastructure connective tissue** (Kafka, model registry, deployment pipeline, drift monitoring) that separates this from production-ready. That's normal and expected for a prototype; those pieces are operationally heavy and don't belong in an MVP.
+
+---
+
+## Another Consideration
+Your flow is well-reasoned, but it has one structural problem at scale
+The core idea is right. DuckDB-as-stateless-compute-engine to avoid expensive DWH scans is a legitimate production pattern (it's essentially what MotherDuck and many modern data platforms advocate). The problem is where state is stored, not how it's computed.
+
+What breaks at scale
+1. DuckDB file = single writer, no concurrency
+fraud_offline.duckdb is a local file. Multiple teams or pipeline runs trying to write to it simultaneously will fail or corrupt. DuckDB is OLAP compute, not shared storage.
+
+2. Local Parquet → not shareable
+data/duckdb/parquet/*.parquet lives on one machine. Other teams, CI runners, or cloud deployments can't access it.
+
+3. Feast registry is a local SQLite file
+feast_repo/feature_repo/data/registry.db is local. Multi-team Feast requires a shared registry (S3, GCS, or a proper DB).
+
+4. No tenant isolation
+One Postgres DB + one Redis instance for all clients. Namespacing ({client_id}:feature_name) in Redis and schema-per-client in Postgres is needed.
+
+The fix: make storage cloud-native, keep DuckDB as stateless compute
+Your originally proposed flow was actually the correct production target — the current prototype just implements it with local files instead of object storage:
+
+```
+Postgres (OLTP, per-tenant schema)
+        ↓  [CDC or scheduled export]
+S3 / GCS  ← raw Parquet / Delta Lake  (this is your "object storage lake")
+        ↓
+DuckDB  ← reads S3 via httpfs extension, computes fct_* features, writes back to S3
+[stateless, ephemeral, runs on any machine — no local .duckdb file needed]
+        ↓
+S3 feature Parquet  ← Feast S3FileSource (replaces local FileSource)
+        ↓
+Feast registry on S3  (shared, versioned, multi-team)
+        ↓
+Redis  (with per-tenant key prefix or separate instance per client)
+```
+
+DuckDB's role stays exactly as you intended — it just reads/writes S3 instead of local disk. This is key: DuckDB supports S3 natively via its httpfs extension, so the dbt models and materialize_features.py logic barely change.
+
+---
+
+### Concrete migration delta from this current repo
+
+```
+Current (prototype)                      Prototype grade
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+`fraud_offline.duckdb` local file        DuckDB reads/writes `s3://bucket/raw/`         
+`data/duckdb/parquet/*.parquet` local    `s3://bucket/features/fct_user_features_v1` partitioned by date
+`FileSource(path=...)` in Feast          `S3FileSource(path="s3://...", ...)`
+`registry: data/registry.db`             `registry: s3://bucket/feast/registry.db`
+Single Redis, no namespacing             `{tenant_id}:{feature_name}` key prefix, or Redis Cluster with keyspace isolation
+Single Postgres DB                       Schema-per-tenant in Postgres, or separate DB per client tier
+```
+
+---
+
+### What you do NOT need to change
+
+- The dbt model SQL — it's already DuckDB-compatible; just switch the profile path to S3
+- The Feast feature view definitions — schema stays the same, only data_sources.py changes
+- The Redis materialization logic — only connection strings change
+- The FastAPI scoring app — /score endpoint is already stateless
+
+---
+
+### Summary
+
+Your instinct to position DuckDB as a "cheap outsourced aggregation engine" is architecturally sound and cost-justified. The current prototype is one configuration change away from being the right pattern — the gap is that storage needs to move from local disk to object storage (S3/GCS). Once you do that, DuckDB becomes a truly stateless compute layer that any team, pipeline, or cloud job can use without file locking or sharing issues.
