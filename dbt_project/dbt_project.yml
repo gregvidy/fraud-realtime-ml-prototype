@@ -22,5 +22,13 @@ models:
       +materialized: table
     intermediate:
       +materialized: table
+      int_user_txn_online_stats:
+        +tags: ["cold_start"]
+      int_device_txn_online_stats:
+        +tags: ["cold_start"]
+      int_user_login_online_stats:
+        +tags: ["cold_start"]
     features:
       +materialized: table
+      fct_training_dataset:
+        +tags: ["archived"]

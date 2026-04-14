@@ -1,6 +1,13 @@
 fraud_features:
-  target: dev
+  target: duckdb
   outputs:
+    # ── Offline analytical target (primary) ────────────────────────────────
+    duckdb:
+      type: duckdb
+      path: "{{ env_var('DUCKDB_PATH', '../data/duckdb/fraud_offline.duckdb') }}"
+      schema: main
+      threads: 4
+    # ── Legacy Postgres target (operational raw data only) ─────────────────
     dev:
       type: postgres
       host: "{{ env_var('POSTGRES_HOST', 'localhost') }}"

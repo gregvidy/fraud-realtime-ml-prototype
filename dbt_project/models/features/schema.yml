@@ -36,12 +36,6 @@ models:
       - name: merchant_id
         tests: [not_null]
 
-  - name: fct_training_dataset
-    description: >
-      Full labelled training dataset joining all feature groups with
-      the fraud label. Used directly by the model training pipeline.
-    columns:
-      - name: transaction_id
-        tests: [unique, not_null]
-      - name: is_fraud
-        tests: [not_null]
+  # fct_training_dataset has been archived to models/_archived/.
+  # Training datasets are now built via Feast get_historical_features() +
+  # online_feature_log. See training/build_training_dataset.py.

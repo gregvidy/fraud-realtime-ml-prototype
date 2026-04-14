@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 import numpy as np
 
 from .feature_fetcher import build_feature_vector, fetch_offline_features, fetch_online_features
+from .feature_logger import log_online_features
 from .model_loader import get_meta, get_model, get_prep
 from .schemas import ScoreRequest, ScoreResponse
 from .score_logger import log_score
@@ -22,6 +23,10 @@ _RISK_BANDS = [
     (0.20, "medium"),
     (0.00, "low"),
 ]
+
+# Feature service version consumed by this scorer.  Update when switching to
+# a new Feast FeatureService (e.g. fraud_scoring_v2).
+FEATURE_SERVICE_VERSION = "fraud_scoring_v1"
 
 
 def _risk_band(score: float) -> str:
@@ -58,6 +63,15 @@ def score_transaction(request: ScoreRequest) -> ScoreResponse:
     # --- Online features (Redis) ---
     online_feats, redis_ok = fetch_online_features(request.user_id, request.device_id)
 
+    # --- Log online features for training-serving consistency ---
+    if redis_ok:
+        log_online_features(
+            transaction_id=request.transaction_id,
+            user_id=request.user_id,
+            device_id=request.device_id,
+            online_features=online_feats,
+        )
+
     # --- Assemble vector ---
     vector = build_feature_vector(
         request_features, feature_cols, offline_feats, online_feats
@@ -76,16 +90,17 @@ def score_transaction(request: ScoreRequest) -> ScoreResponse:
     )
 
     log_score(
-        transaction_id   = request.transaction_id,
-        user_id          = request.user_id,
-        device_id        = request.device_id,
-        merchant_id      = request.merchant_id,
-        fraud_score      = score,
-        risk_band        = _risk_band(score),
-        is_flagged       = score >= threshold,
-        model_version    = model_name,
-        feast_offline_ok = feast_ok,
-        redis_online_ok  = redis_ok,
+        transaction_id           = request.transaction_id,
+        user_id                  = request.user_id,
+        device_id                = request.device_id,
+        merchant_id              = request.merchant_id,
+        fraud_score              = score,
+        risk_band                = _risk_band(score),
+        is_flagged               = score >= threshold,
+        model_version            = model_name,
+        feature_service_version  = FEATURE_SERVICE_VERSION,
+        feast_offline_ok         = feast_ok,
+        redis_online_ok          = redis_ok,
     )
 
     return ScoreResponse(

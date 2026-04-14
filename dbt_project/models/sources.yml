@@ -2,8 +2,11 @@ version: 2
 
 sources:
   - name: raw
-    description: Raw operational tables loaded by the synthetic data generator.
-    schema: public
+    description: >
+      Raw operational tables exported from PostgreSQL into DuckDB by
+      scripts/export_pg_to_duckdb.py. PostgreSQL remains the system-of-record
+      for raw transactional data; DuckDB is the offline analytical store.
+    schema: raw
     tables:
       - name: raw_transactions
         description: One row per payment transaction attempt.

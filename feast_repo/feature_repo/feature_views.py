@@ -1,11 +1,21 @@
 """
 feature_views.py — Feast feature view definitions for fraud detection.
+
+Versioning convention: <entity>_batch_fv_v<N>
+  - Increment N on any breaking change to feature logic or schema.
+  - Non-breaking additions (new fields) do not require a new version.
+  - Old versions are kept registered until all consumers have migrated.
+
+Current versions:
+  user_batch_fv_v1     — initial DuckDB-backed offline feature set
+  device_batch_fv_v1   — initial DuckDB-backed offline feature set
+  merchant_batch_fv_v1 — initial DuckDB-backed offline feature set
 """
 
 from datetime import timedelta
 
 from feast import FeatureView, Field
-from feast.types import Float64, Int64, String
+from feast.types import Float64, Int64
 
 from entities import device, merchant, user
 from data_sources import (
@@ -15,10 +25,10 @@ from data_sources import (
 )
 
 # ---------------------------------------------------------------------------
-# User batch feature view
+# User batch feature view — v1
 # ---------------------------------------------------------------------------
-user_batch_fv = FeatureView(
-    name="user_batch_fv",
+user_batch_fv_v1 = FeatureView(
+    name="user_batch_fv_v1",
     entities=[user],
     ttl=timedelta(days=3),
     schema=[
@@ -51,15 +61,15 @@ user_batch_fv = FeatureView(
         Field(name="user_failed_logins_1h",        dtype=Int64),
     ],
     source=user_features_source,
-    description="Rolling window user-level features from dbt batch pipeline.",
-    tags={"owner": "model_team", "pipeline": "dbt"},
+    description="v1: Rolling window user-level features from dbt + DuckDB offline pipeline.",
+    tags={"owner": "model_team", "pipeline": "dbt_duckdb", "version": "1"},
 )
 
 # ---------------------------------------------------------------------------
-# Device batch feature view
+# Device batch feature view — v1
 # ---------------------------------------------------------------------------
-device_batch_fv = FeatureView(
-    name="device_batch_fv",
+device_batch_fv_v1 = FeatureView(
+    name="device_batch_fv_v1",
     entities=[device],
     ttl=timedelta(days=3),
     schema=[
@@ -73,15 +83,15 @@ device_batch_fv = FeatureView(
         Field(name="device_txn_count_1h",       dtype=Int64),
     ],
     source=device_features_source,
-    description="Rolling window device-level features from dbt batch pipeline.",
-    tags={"owner": "model_team", "pipeline": "dbt"},
+    description="v1: Rolling window device-level features from dbt + DuckDB offline pipeline.",
+    tags={"owner": "model_team", "pipeline": "dbt_duckdb", "version": "1"},
 )
 
 # ---------------------------------------------------------------------------
-# Merchant batch feature view
+# Merchant batch feature view — v1
 # ---------------------------------------------------------------------------
-merchant_batch_fv = FeatureView(
-    name="merchant_batch_fv",
+merchant_batch_fv_v1 = FeatureView(
+    name="merchant_batch_fv_v1",
     entities=[merchant],
     ttl=timedelta(days=3),
     schema=[
@@ -92,6 +102,6 @@ merchant_batch_fv = FeatureView(
         Field(name="merchant_fraud_rate_30d",    dtype=Float64),
     ],
     source=merchant_features_source,
-    description="Rolling window merchant-level features from dbt batch pipeline.",
-    tags={"owner": "model_team", "pipeline": "dbt"},
+    description="v1: Rolling window merchant-level features from dbt + DuckDB offline pipeline.",
+    tags={"owner": "model_team", "pipeline": "dbt_duckdb", "version": "1"},
 )

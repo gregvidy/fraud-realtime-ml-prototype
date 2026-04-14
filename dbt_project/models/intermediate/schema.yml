@@ -28,3 +28,29 @@ models:
     columns:
       - name: transaction_id
         tests: [unique, not_null]
+
+  - name: int_user_txn_online_stats
+    description: >
+      [COLD START ONLY — tag: cold_start] SQL approximation of Redis
+      sliding-window online features (5m/10m/1h) for the first training
+      run before online_feature_log has data. Excluded from daily dbt runs.
+      Run manually once: dbt run --select tag:cold_start
+    columns:
+      - name: transaction_id
+        tests: [unique, not_null]
+
+  - name: int_device_txn_online_stats
+    description: >
+      [COLD START ONLY — tag: cold_start] SQL approximation of Redis
+      device sliding-window features. Excluded from daily dbt runs.
+    columns:
+      - name: transaction_id
+        tests: [unique, not_null]
+
+  - name: int_user_login_online_stats
+    description: >
+      [COLD START ONLY — tag: cold_start] SQL approximation of Redis
+      login failure sliding-window features. Excluded from daily dbt runs.
+    columns:
+      - name: transaction_id
+        tests: [unique, not_null]

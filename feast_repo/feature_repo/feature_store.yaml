@@ -5,11 +5,5 @@ online_store:
     type: redis
     connection_string: "localhost:6379"
 offline_store:
-    type: postgres
-    host: localhost
-    port: 5432
-    database: fraud_db
-    db_schema: public
-    user: fraud_user
-    password: fraud_pass
+    type: file
 entity_key_serialization_version: 2

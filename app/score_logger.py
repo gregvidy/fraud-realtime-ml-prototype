@@ -35,11 +35,11 @@ _INSERT = """
 INSERT INTO model_score_log
     (transaction_id, user_id, device_id, merchant_id,
      fraud_score, risk_band, is_flagged, model_version,
-     feast_offline_ok, redis_online_ok)
+     feature_service_version, feast_offline_ok, redis_online_ok)
 VALUES
     (%(transaction_id)s, %(user_id)s, %(device_id)s, %(merchant_id)s,
      %(fraud_score)s, %(risk_band)s, %(is_flagged)s, %(model_version)s,
-     %(feast_offline_ok)s, %(redis_online_ok)s)
+     %(feature_service_version)s, %(feast_offline_ok)s, %(redis_online_ok)s)
 ON CONFLICT DO NOTHING
 """
 
@@ -53,6 +53,7 @@ def log_score(
     risk_band: str,
     is_flagged: bool,
     model_version: str,
+    feature_service_version: str,
     feast_offline_ok: bool,
     redis_online_ok: bool,
 ) -> None:
@@ -60,16 +61,17 @@ def log_score(
         conn = _get_conn()
         with conn.cursor() as cur:
             cur.execute(_INSERT, {
-                "transaction_id":   transaction_id,
-                "user_id":          user_id,
-                "device_id":        device_id,
-                "merchant_id":      merchant_id,
-                "fraud_score":      fraud_score,
-                "risk_band":        risk_band,
-                "is_flagged":       is_flagged,
-                "model_version":    model_version,
-                "feast_offline_ok": feast_offline_ok,
-                "redis_online_ok":  redis_online_ok,
+                "transaction_id":          transaction_id,
+                "user_id":                 user_id,
+                "device_id":               device_id,
+                "merchant_id":             merchant_id,
+                "fraud_score":             fraud_score,
+                "risk_band":               risk_band,
+                "is_flagged":              is_flagged,
+                "model_version":           model_version,
+                "feature_service_version": feature_service_version,
+                "feast_offline_ok":        feast_offline_ok,
+                "redis_online_ok":         redis_online_ok,
             })
         conn.commit()
     except Exception as exc:

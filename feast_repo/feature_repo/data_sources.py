@@ -1,29 +1,42 @@
 """
-data_sources.py — Feast data source definitions backed by dbt-generated tables.
+data_sources.py — Feast data source definitions backed by DuckDB-generated Parquet files.
+
+dbt builds feature tables in DuckDB (offline analytical store).
+scripts/materialize_features.py exports those tables to Parquet.
+Feast reads these Parquet files as its offline store during historical retrieval
+and as the source for materializing features into Redis (online store).
+
+Parquet files live at:
+    data/duckdb/parquet/fct_user_features_v1.parquet
+    data/duckdb/parquet/fct_device_features_v1.parquet
+    data/duckdb/parquet/fct_merchant_features_v1.parquet
 """
 
 import os
+from pathlib import Path
 
-from feast.infra.offline_stores.contrib.postgres_offline_store.postgres_source import (
-    PostgreSQLSource,
-)
+from feast import FileSource
 
-_schema = os.getenv("POSTGRES_SCHEMA", "public")
+_REPO_ROOT = Path(__file__).parents[2]
+_PARQUET_DIR = _REPO_ROOT / "data" / "duckdb" / "parquet"
 
-user_features_source = PostgreSQLSource(
+# Respect override via env var (useful for CI or custom paths)
+_parquet_dir = Path(os.getenv("PARQUET_DIR", str(_PARQUET_DIR)))
+
+user_features_source = FileSource(
     name="user_features_source",
-    query=f"SELECT * FROM {_schema}.fct_user_features",
+    path=str(_parquet_dir / "fct_user_features_v1.parquet"),
     timestamp_field="event_timestamp",
 )
 
-device_features_source = PostgreSQLSource(
+device_features_source = FileSource(
     name="device_features_source",
-    query=f"SELECT * FROM {_schema}.fct_device_features",
+    path=str(_parquet_dir / "fct_device_features_v1.parquet"),
     timestamp_field="event_timestamp",
 )
 
-merchant_features_source = PostgreSQLSource(
+merchant_features_source = FileSource(
     name="merchant_features_source",
-    query=f"SELECT * FROM {_schema}.fct_merchant_features",
+    path=str(_parquet_dir / "fct_merchant_features_v1.parquet"),
     timestamp_field="event_timestamp",
 )
