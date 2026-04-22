@@ -7,7 +7,7 @@ No live infrastructure required — model and Redis are mocked.
 
 import json
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -47,8 +47,8 @@ def mock_model_and_features():
     with (
         patch("app.model_loader._model",  mock_model),
         patch("app.model_loader._meta",   MOCK_META),
-        patch("app.feature_fetcher.fetch_offline_features", return_value=({}, False)),
-        patch("app.feature_fetcher.fetch_online_features",  return_value=({}, False)),
+        patch("app.feature_fetcher.fetch_offline_features", new=AsyncMock(return_value=({}, False))),
+        patch("app.feature_fetcher.fetch_online_features",  new=AsyncMock(return_value=({}, False))),
     ):
         yield
 

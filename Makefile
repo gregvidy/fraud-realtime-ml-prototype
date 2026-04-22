@@ -1,4 +1,4 @@
-.PHONY: help setup infra-up infra-down seed-data reseed-data append-data _truncate-raw dbt-run feast-apply materialize train start-api stream-events score-test clean export-to-duckdb offline-pipeline migrate-db
+.PHONY: help setup infra-up infra-down seed-data reseed-data append-data _truncate-raw dbt-run feast-apply materialize train train-only start-api start-api-dev stop-api stream-events score-test load-test load-test-ui clean export-to-duckdb offline-pipeline migrate-db mlflow-ui promote-model list-models
 
 CONDA_ENV := fraud-realtime-ml
 CONDA_PREFIX := $(shell conda info --base)/envs/$(CONDA_ENV)
@@ -6,6 +6,10 @@ PYTHON := $(CONDA_PREFIX)/bin/python
 DBT := $(CONDA_PREFIX)/bin/dbt
 FEAST := $(CONDA_PREFIX)/bin/feast
 UVICORN := $(CONDA_PREFIX)/bin/uvicorn
+GUNICORN := $(CONDA_PREFIX)/bin/gunicorn
+MLFLOW := $(CONDA_PREFIX)/bin/mlflow
+MLFLOW_PORT ?= 5000
+MLFLOW_STORE ?= sqlite:///mlflow.db
 
 help:
 	@echo "Fraud Realtime ML MVP — available commands:"
@@ -32,6 +36,16 @@ help:
 	@echo "  ── Training & serving ────────────────────────────────────────────"
 	@echo "  make train          Build training dataset (Feast PIT join + online_feature_log) + train model"
 	@echo "  make train CONFIG=training/my_config.yaml  Train with a custom config"
+	@echo "  make train SAMPLE=0.3       Train on a 30%% random sample (faster iteration)"
+	@echo "  make train-only             Skip dataset build — reuse existing parquet, just train + evaluate"
+	@echo "  make train-only CONFIG=training/experiments/lgbm_v1.yaml  Swap model without rebuilding dataset"
+	@echo "  make mlflow-ui              Open MLflow experiment tracking UI (http://localhost:5000)"
+	@echo "  make mlflow-ui MLFLOW_PORT=5001  Use a custom port"
+	@echo "  make list-models            List recent MLflow runs with ROC-AUC / PR-AUC for comparison"
+	@echo "  make promote-model RUN_ID=<id>         Promote a run to be the active /score model"
+	@echo "  make promote-model RUN_ID=<id> ALIAS=production  Promote with a custom alias"
+	@echo "  make promote-model MODEL_NAME=fraud_model VERSION=3  Promote a registry version"
+	@echo "  make promote-model RUN_ID=<id> DRY_RUN=1  Preview without making changes"
 	@echo "  make start-api      Start the FastAPI scoring service"
 	@echo "  make stream-events  Start the transaction stream simulator"
 	@echo "  make score-test     Send a test scoring request"
@@ -146,12 +160,65 @@ migrate-db:
 	@echo "Migration applied."
 
 train:
-	$(PYTHON) training/build_training_dataset.py $(if $(DB_PATH),--db-path $(DB_PATH),)
+	$(PYTHON) training/build_training_dataset.py $(if $(DB_PATH),--db-path $(DB_PATH),) $(if $(SAMPLE),--sample-frac $(SAMPLE),)
 	$(PYTHON) training/train_model.py $(if $(CONFIG),--config $(CONFIG),)
 	$(PYTHON) training/evaluate_model.py
 
+train-only:
+	@test -f training/datasets/training_dataset.parquet \
+		|| (echo "ERROR: training/datasets/training_dataset.parquet not found. Run 'make train' first."; exit 1)
+	$(PYTHON) training/train_model.py $(if $(CONFIG),--config $(CONFIG),)
+	$(PYTHON) training/evaluate_model.py
+
+mlflow-ui:
+	@echo "Opening MLflow UI → http://localhost:$(MLFLOW_PORT)"
+	$(MLFLOW) ui --backend-store-uri $(MLFLOW_STORE) --host 0.0.0.0 --port $(MLFLOW_PORT)
+
+list-models:
+	$(PYTHON) scripts/promote_model.py --list $(if $(N),-n $(N),)
+
+promote-model:
+	$(PYTHON) scripts/promote_model.py \
+		$(if $(RUN_ID),--run-id $(RUN_ID),) \
+		$(if $(MODEL_NAME),--model-name $(MODEL_NAME),) \
+		$(if $(VERSION),--version $(VERSION),) \
+		$(if $(ALIAS),--alias $(ALIAS),) \
+		$(if $(DRY_RUN),--dry-run,)
+
 start-api:
+	$(GUNICORN) app.main:app \
+		-w 4 \
+		-k uvicorn.workers.UvicornWorker \
+		--bind 0.0.0.0:8000 \
+		--worker-connections 1000 \
+		--backlog 2048 \
+		--timeout 30 \
+		--access-logfile -
+
+start-api-dev:
 	$(UVICORN) app.main:app --host 0.0.0.0 --port 8000 --reload
+
+stop-api:
+	@lsof -ti :8000 | xargs kill 2>/dev/null && echo "API stopped" || echo "Nothing running on port 8000"
+
+# Load testing — targets ~300 TPS by default
+# Override: make load-test USERS=500 RATE=50 DURATION=120s HOST=http://localhost:8000
+LOCUST   := $(CONDA_PREFIX)/bin/locust
+USERS    ?= 300
+RATE     ?= 30
+DURATION ?= 60s
+HOST     ?= http://localhost:8000
+
+load-test:
+	$(LOCUST) -f locustfile.py --headless \
+		-u $(USERS) -r $(RATE) \
+		--run-time $(DURATION) \
+		--host $(HOST) \
+		--only-summary
+
+load-test-ui:
+	@echo "Open http://localhost:8089 in your browser, then configure users + host"
+	$(LOCUST) -f locustfile.py --host $(HOST)
 
 stream-events:
 	$(PYTHON) simulator/stream_transactions.py
@@ -159,7 +226,7 @@ stream-events:
 score-test:
 	curl -s -X POST http://localhost:8000/score \
 		-H "Content-Type: application/json" \
-		-d '{"transaction_id":"test-001","user_id":"u_001","device_id":"d_001","merchant_id":"m_001","amount":250.00,"currency":"USD","payment_method":"card","country_code":"US","is_international":false}' \
+		-d '{"transaction_id":"test-001","user_id":"u_000001","device_id":"d_0000001","merchant_id":"m_00001","amount":250.00,"currency":"USD","payment_method":"card","country_code":"US","is_international":false}' \
 		| python3 -m json.tool
 
 lint:

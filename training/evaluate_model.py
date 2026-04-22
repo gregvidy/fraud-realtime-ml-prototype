@@ -19,6 +19,7 @@ import json
 from pathlib import Path
 
 import joblib
+import mlflow
 import numpy as np
 import pandas as pd
 from sklearn.calibration import calibration_curve
@@ -210,7 +211,8 @@ def main(meta_path: Path) -> None:
     print(f"Calib  : {calibration_info}")
     print(f"{'ROC-AUC':<40}: {roc_auc:.4f}")
     print(f"{'PR-AUC':<40}: {pr_auc:.4f}")
-    print(f"{'Recall @ Precision\u22650.5':<40}: {recall_at_p50:.4f}")
+    _recall_label = "Recall @ Precision\u22650.5"
+    print(f"{_recall_label:<40}: {recall_at_p50:.4f}")
     print(f"{'Threshold':<40}: {threshold:.4f}")
     print()
     print("Classification Report:")
@@ -249,6 +251,39 @@ def main(meta_path: Path) -> None:
             print(f"  {name:<45} {imp:.5f} {bar}")
 
     print("=" * 66)
+
+    # ------------------------------------------------------------------
+    # Log all evaluation metrics to the MLflow run started by train_model.py
+    # ------------------------------------------------------------------
+    _run_id      = meta.get("mlflow_run_id")
+    _tracking    = meta.get("mlflow_tracking_uri")
+    if _run_id and _tracking:
+        mlflow.set_tracking_uri(_tracking)
+        with mlflow.start_run(run_id=_run_id):   # resumes the existing run
+            _eval: dict[str, float] = {
+                "eval.roc_auc":        roc_auc,
+                "eval.pr_auc":         pr_auc,
+                "eval.recall_at_p50":  recall_at_p50,
+                "eval.threshold":      float(threshold),
+                "eval.n_val":          float(len(val_df)),
+                "eval.fraud_rate_val": float(y_val.mean()),
+            }
+            # Confusion matrix
+            _tn, _fp, _fn, _tp = cm.ravel()
+            _eval["eval.tn"] = float(_tn)
+            _eval["eval.fp"] = float(_fp)
+            _eval["eval.fn"] = float(_fn)
+            _eval["eval.tp"] = float(_tp)
+            _eval["eval.precision_at_threshold"] = float(_tp / max(_tp + _fp, 1))
+            _eval["eval.recall_at_threshold"]    = float(_tp / max(_tp + _fn, 1))
+            # Calibration metrics
+            _eval["eval.brier_score_raw"] = float(brier_score_loss(y_val, raw_proba))
+            _eval["eval.ece_raw"]          = _ece(y_val, raw_proba)
+            if cal_proba is not None:
+                _eval["eval.brier_score_calibrated"] = float(brier_score_loss(y_val, cal_proba))
+                _eval["eval.ece_calibrated"]          = _ece(y_val, cal_proba)
+            mlflow.log_metrics(_eval)
+            print(f"\nMLflow eval metrics logged → run {_run_id}")
 
 
 if __name__ == "__main__":

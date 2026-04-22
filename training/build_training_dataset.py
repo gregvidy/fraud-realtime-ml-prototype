@@ -131,20 +131,32 @@ def _fetch_entity_df() -> pd.DataFrame:
 # Step 2 — offline features via Feast PIT join
 # ---------------------------------------------------------------------------
 
+FEAST_CHUNK_SIZE = 50_000  # rows per Feast PIT join batch to limit peak RAM
+
+
 def _fetch_offline_features(entity_df: pd.DataFrame, feast_repo: Path) -> pd.DataFrame:
     """
     Use Feast get_historical_features() to do a point-in-time correct join
     of offline (batch) features onto the entity DataFrame.
+
+    Processes in chunks of FEAST_CHUNK_SIZE to avoid OOM on large datasets.
     Returns a DataFrame with entity columns + offline feature columns.
     """
     from feast import FeatureStore
     store = FeatureStore(repo_path=str(feast_repo))
-    print(f"  Running Feast PIT join for {len(entity_df):,} entities...")
-    job = store.get_historical_features(
-        entity_df=entity_df[["transaction_id", "user_id", "device_id", "merchant_id", "event_timestamp"]],
-        features=FEAST_FEATURES,
-    )
-    return job.to_df()
+    total = len(entity_df)
+    print(f"  Running Feast PIT join for {total:,} entities in chunks of {FEAST_CHUNK_SIZE:,}...")
+
+    entity_cols = ["transaction_id", "user_id", "device_id", "merchant_id", "event_timestamp"]
+    chunks = []
+    for start in range(0, total, FEAST_CHUNK_SIZE):
+        end = min(start + FEAST_CHUNK_SIZE, total)
+        chunk = entity_df.iloc[start:end][entity_cols]
+        print(f"    chunk {start:,}–{end:,} ...", end="\r", flush=True)
+        job = store.get_historical_features(entity_df=chunk, features=FEAST_FEATURES)
+        chunks.append(job.to_df())
+    print(f"  Feast PIT join complete ({total:,} rows)." + " " * 20)
+    return pd.concat(chunks, ignore_index=True)
 
 
 # ---------------------------------------------------------------------------

@@ -2,8 +2,14 @@
 scoring.py
 ----------
 Core scoring logic: assembles features and produces a fraud score.
+
+Phase 2 optimisation: score_transaction is now async.  Feast offline and
+Redis online feature fetches run concurrently via asyncio.gather, saving
+the full Redis fetch time (~5-10 ms) from the critical path compared to
+the previous sequential calls.
 """
 
+import asyncio
 import logging
 from datetime import datetime, timezone
 
@@ -36,7 +42,7 @@ def _risk_band(score: float) -> str:
     return "low"
 
 
-def score_transaction(request: ScoreRequest) -> ScoreResponse:
+async def score_transaction(request: ScoreRequest) -> ScoreResponse:
     model = get_model()
     meta  = get_meta()
 
@@ -55,15 +61,13 @@ def score_transaction(request: ScoreRequest) -> ScoreResponse:
         "local_hour":       request.local_hour if request.local_hour is not None else now_hour,
     }
 
-    # --- Offline features (Feast) ---
-    offline_feats, feast_ok = fetch_offline_features(
-        request.user_id, request.device_id, request.merchant_id
+    # --- Parallel feature fetches (Phase 2) ---
+    (offline_feats, feast_ok), (online_feats, redis_ok) = await asyncio.gather(
+        fetch_offline_features(request.user_id, request.device_id, request.merchant_id),
+        fetch_online_features(request.user_id, request.device_id),
     )
 
-    # --- Online features (Redis) ---
-    online_feats, redis_ok = fetch_online_features(request.user_id, request.device_id)
-
-    # --- Log online features for training-serving consistency ---
+    # --- Log online features for training-serving consistency (non-blocking) ---
     if redis_ok:
         log_online_features(
             transaction_id=request.transaction_id,
@@ -89,6 +93,7 @@ def score_transaction(request: ScoreRequest) -> ScoreResponse:
         request.transaction_id, request.user_id, score, feast_ok, redis_ok,
     )
 
+    # --- Log score (non-blocking enqueue) ---
     log_score(
         transaction_id           = request.transaction_id,
         user_id                  = request.user_id,

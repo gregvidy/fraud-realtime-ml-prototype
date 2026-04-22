@@ -34,6 +34,8 @@ import numpy as np
 import pandas as pd
 import yaml
 from dotenv import load_dotenv
+import mlflow
+import mlflow.sklearn
 from sklearn.compose import ColumnTransformer
 from sklearn.metrics import average_precision_score, precision_recall_curve, roc_auc_score
 from sklearn.preprocessing import (
@@ -273,6 +275,57 @@ def _choose_threshold(y_val: np.ndarray, proba: np.ndarray, cfg: dict) -> float:
         return float(thresholds[best])
     return 0.5
 
+
+# ---------------------------------------------------------------------------
+# MLflow helpers
+# ---------------------------------------------------------------------------
+
+def _collect_mlflow_params(
+    cfg: dict,
+    model_type: str,
+    numeric_cols: list[str],
+    cat_cols: list[str],
+    pos_weight: float,
+) -> dict[str, str]:
+    """Flatten experiment config into a flat str→str dict for mlflow.log_params()."""
+    params: dict[str, str] = {}
+
+    split_cfg = cfg["split"]
+    params["split.method"]           = str(split_cfg.get("method", "temporal"))
+    params["split.cutoff_quantile"]  = str(split_cfg.get("cutoff_quantile", 0.80))
+    params["split.cutoff_date"]      = str(split_cfg.get("cutoff_date") or "")
+    params["split.random_test_size"] = str(split_cfg.get("random_test_size", 0.20))
+    params["split.random_seed"]      = str(split_cfg.get("random_seed", 42))
+
+    prep_cfg = cfg["preprocessing"]
+    params["preprocessing.numeric_transformer"]     = prep_cfg.get("numeric_transformer", "passthrough")
+    params["preprocessing.categorical_transformer"] = prep_cfg.get("categorical_transformer", "passthrough")
+
+    params["features.n_numeric"]     = str(len(numeric_cols))
+    params["features.n_categorical"] = str(len(cat_cols))
+    params["features.n_total"]       = str(len(numeric_cols) + len(cat_cols))
+    # Full feature list as artifact; truncated param for quick filtering in UI
+    feat_str = ",".join(numeric_cols + cat_cols)
+    params["features.list"] = feat_str[:490]
+
+    params["model.type"]       = model_type
+    params["model.pos_weight"] = str(round(pos_weight, 4))
+    for k, v in cfg["model"].get(model_type, {}).items():
+        params[f"model.{k}"] = str(v)
+
+    thresh_cfg = cfg["threshold"]
+    params["threshold.strategy"]      = thresh_cfg.get("strategy", "recall_target")
+    params["threshold.target_recall"] = str(thresh_cfg.get("target_recall", 0.80))
+    params["threshold.fixed_value"]   = str(thresh_cfg.get("fixed_value", 0.5))
+
+    calib_cfg = cfg.get("calibration", {})
+    params["calibration.enabled"]  = str(calib_cfg.get("enabled", False))
+    params["calibration.method"]   = str(calib_cfg.get("method", "none"))
+    params["calibration.fraction"] = str(calib_cfg.get("calib_fraction", 0.20))
+
+    return params
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -299,6 +352,20 @@ def main(config_path: Path) -> None:
     prep_path    = model_dir / f"{output_name}_prep.pkl"
     calib_path   = model_dir / f"{output_name}_calibrated.pkl"
     meta_path    = model_dir / "model_meta.json"   # fixed name — scoring service reads this
+
+    # --- MLflow setup (start run early so params/metrics land in one run) ---
+    mlflow_cfg    = cfg.get("mlflow", {})
+    _tracking_uri = mlflow_cfg.get("tracking_uri", "sqlite:///mlflow.db")
+    # Resolve bare relative paths (e.g. "mlruns") to absolute, but leave
+    # scheme-prefixed URIs (http://, sqlite:///, postgresql://, etc.) untouched.
+    if "://" not in _tracking_uri:
+        _tracking_uri = str(_PROJECT_ROOT / _tracking_uri)
+    mlflow.set_tracking_uri(_tracking_uri)
+    mlflow.set_experiment(mlflow_cfg.get("experiment_name", "fraud-detection"))
+    _run_name    = mlflow_cfg.get("run_name") or f"{model_cfg.get('type', 'model')}_{output_name}"
+    _mlflow_tags = {str(k): str(v) for k, v in (mlflow_cfg.get("tags") or {}).items()}
+    _mlflow_run  = mlflow.start_run(run_name=_run_name, tags=_mlflow_tags)
+    print(f"MLflow run started  → {_mlflow_run.info.run_id}")
 
     label_col    = data_cfg.get("label_col", "is_fraud")
     ts_col       = data_cfg.get("timestamp_col", "event_timestamp")
@@ -362,6 +429,17 @@ def main(config_path: Path) -> None:
     split_label = "OOT" if split_method == "temporal" else "Val"
     print(f"Base train balance  : fraud={fraud_tr:,}  legit={legit_tr:,}  pos_weight={pos_weight:.1f}")
     print(f"{split_label:5} balance      : fraud={fraud_val:,}  legit={legit_val:,}")
+
+    # --- Log all experiment params now that we have pos_weight ---
+    mlflow.log_params(_collect_mlflow_params(cfg, model_cfg["type"], numeric_cols, cat_cols, pos_weight))
+    mlflow.log_params({
+        "data.n_train":          str(len(X_train)),
+        "data.n_val":            str(len(X_val)),
+        "data.n_fraud_train":    str(fraud_tr),
+        "data.n_fraud_val":      str(fraud_val),
+        "data.fraud_rate_train": str(round(fraud_tr / max(len(y_train), 1), 4)),
+        "data.fraud_rate_val":   str(round(fraud_val / max(len(y_val), 1), 4)),
+    })
 
     # ------------------------------------------------------------------
     # Preprocessing — fit ONLY on base training data
@@ -440,6 +518,17 @@ def main(config_path: Path) -> None:
     t_param    = thresh_cfg.get("target_recall") if t_strategy == "recall_target" else thresh_cfg.get("fixed_value")
     print(f"Threshold ({t_strategy}={t_param}) : {threshold:.4f}")
 
+    # --- Log training-time metrics ---
+    _train_metrics: dict[str, float] = {
+        "train.val_roc_auc": roc_auc,
+        "train.val_pr_auc":  pr_auc,
+        "train.threshold":   threshold,
+    }
+    if calibrated_model is not None:
+        _train_metrics["train.val_roc_auc_raw"] = raw_roc
+        _train_metrics["train.val_pr_auc_raw"]  = raw_pr
+    mlflow.log_metrics(_train_metrics)
+
     # ------------------------------------------------------------------
     # Save artifacts
     # ------------------------------------------------------------------
@@ -457,6 +546,37 @@ def main(config_path: Path) -> None:
         if calib_path.exists():
             calib_path.unlink()
             print(f"Removed stale calibrated artifact: {calib_path}")
+
+    # --- Log model artifact + optionally register in MLflow Model Registry ---
+    # mlflow.sklearn.log_model logs a proper MLmodel directory (required for
+    # register_model in MLflow 3.x) and works with local/SQLite backends.
+    # Raw pkl files are also logged separately under artifacts/ so the existing
+    # scoring service can load them by path without depending on MLflow at runtime.
+    _registry_name = (
+        mlflow_cfg.get("model_registry_name", output_name)
+        if mlflow_cfg.get("register_model", True) else None
+    )
+    print(f"Logging model to MLflow{' (registry: ' + _registry_name + ')' if _registry_name else ''} ...")
+    mlflow.sklearn.log_model(
+        sk_model=scoring_model,
+        name=output_name,
+        registered_model_name=_registry_name,
+    )
+    # Supplementary raw pkl artifacts for the scoring service
+    mlflow.log_artifact(str(model_path), artifact_path="artifacts")
+    if prep_path.exists():
+        mlflow.log_artifact(str(prep_path), artifact_path="artifacts")
+    if calib_path.exists():
+        mlflow.log_artifact(str(calib_path), artifact_path="artifacts")
+    # Log training config file so the exact setup is reproducible from the UI
+    mlflow.log_artifact(str(config_path), artifact_path="config")
+    # Log feature importances as a JSON artifact for easy comparison across runs
+    if hasattr(model, "feature_importances_"):
+        _fi_pairs = sorted(
+            zip(feature_names_out[:len(model.feature_importances_)], model.feature_importances_.tolist()),
+            key=lambda x: x[1], reverse=True,
+        )
+        mlflow.log_dict(dict(_fi_pairs), "feature_importances.json")
 
     n_estimators_used = None
     if model_type == "xgboost":
@@ -492,9 +612,17 @@ def main(config_path: Path) -> None:
         "val_roc_auc":       round(roc_auc, 4),
         "val_pr_auc":        round(pr_auc, 4),
         "n_estimators_used": n_estimators_used,
+        # MLflow back-reference so evaluate_model.py can resume this run
+        "mlflow_run_id":      _mlflow_run.info.run_id,
+        "mlflow_tracking_uri": _tracking_uri,
     }
     meta_path.write_text(json.dumps(meta, indent=2))
+    # Also log model_meta.json as a config artifact for full reproducibility
+    mlflow.log_artifact(str(meta_path), artifact_path="config")
     print(f"Saving metadata     → {meta_path}")
+
+    mlflow.end_run()
+    print(f"MLflow run complete → {_mlflow_run.info.run_id}")
     print("\nTraining complete.")
 
 
