@@ -1,0 +1,238 @@
+# ============================================================
+# Fraud Model Training Configuration
+# Edit this file to run experiments without touching source code.
+#
+# Usage:
+#   python training/train_model.py                          # uses this file
+#   python training/train_model.py --config my_config.yaml # custom config
+#   make train                                              # uses this file
+#   make train CONFIG=training/my_config.yaml               # custom config
+# ============================================================
+
+# ---------------------------------------------------------------------------
+# Data
+# ---------------------------------------------------------------------------
+data:
+  # Path relative to project root (or absolute)
+  path: training/datasets/training_dataset.parquet
+  timestamp_col: event_timestamp
+  label_col: is_fraud
+  fillna_value: 0
+
+# ---------------------------------------------------------------------------
+# Train / Validation split
+#
+# temporal (recommended) — sorts by event_timestamp and carves out an
+#   Out-of-Time (OOT) hold-out from the most-recent window.
+#   This prevents pattern leakage of recent fraud signals into training.
+#
+# random — stratified random split (useful for ablation / debugging only).
+# ---------------------------------------------------------------------------
+split:
+  method: temporal              # temporal | random
+
+  # Temporal options (only used when method=temporal).
+  # Supply ONE of:
+  #   cutoff_date: "2024-06-01"   — explicit ISO date boundary (YYYY-MM-DD)
+  #   cutoff_quantile: 0.80       — percentile of timestamps used as cutoff
+  #                                 → top 20 % of time becomes OOT hold-out
+  cutoff_date: null
+  cutoff_quantile: 0.80
+
+  # Random options (only used when method=random)
+  random_test_size: 0.20
+  random_seed: 42
+
+# ---------------------------------------------------------------------------
+# Features
+# Split into numeric and categorical lists so different transformers can be
+# applied to each group.
+# ---------------------------------------------------------------------------
+features:
+  numeric:
+    # Request-time
+    - txn_amount
+    - is_international
+    - local_hour
+    # User — offline (batch)
+    - user_account_age_days
+    - user_is_verified
+    - user_is_standard_account
+    - user_txn_count_1d
+    - user_txn_count_7d
+    - user_txn_count_30d
+    - user_txn_amount_sum_1d
+    - user_txn_amount_sum_7d
+    - user_txn_amount_sum_30d
+    - user_avg_ticket_30d
+    - user_distinct_merchants_30d
+    - user_distinct_devices_30d
+    - user_decline_count_7d
+    - user_failed_logins_7d
+    - user_failed_logins_1d
+    # Device — offline (batch)
+    - device_distinct_users_30d
+    - device_txn_count_7d
+    - device_txn_count_1d
+    - device_is_shared_flag
+    # Merchant — offline (batch)
+    - merchant_is_high_risk
+    - merchant_is_online
+    - merchant_txn_count_30d
+    - merchant_avg_ticket_30d
+    - merchant_fraud_rate_30d
+    # User — online (reconstructed via dbt window functions / Redis at serving)
+    - user_txn_count_5m
+    - user_txn_count_10m
+    - user_txn_count_1h
+    - user_txn_amount_sum_5m
+    - user_txn_amount_sum_10m
+    - user_txn_amount_sum_1h
+    - user_distinct_merchants_5m
+    - user_distinct_merchants_10m
+    - user_distinct_merchants_1h
+    # Device — online (reconstructed via dbt / Redis at serving)
+    - device_txn_count_5m
+    - device_txn_count_10m
+    - device_txn_count_1h
+    # Login — online (reconstructed via dbt / Redis at serving)
+    - user_failed_logins_15m
+    - user_failed_logins_1h
+
+  # List column names here to apply the categorical transformer.
+  # Example: [currency, payment_method]
+  categorical: []
+
+# ---------------------------------------------------------------------------
+# Preprocessing
+# Transformers are fit ONLY on training data to prevent leakage.
+#
+# numeric_transformer options:
+#   passthrough    — no transformation (recommended for tree-based models)
+#   standard_scaler  — zero mean, unit variance
+#   minmax_scaler    — scale to [0, 1]
+#   robust_scaler    — median/IQR scaling, robust to outliers
+#
+# categorical_transformer options:
+#   passthrough  — no transformation
+#   ordinal      — integer-encode categories (OrdinalEncoder; good for trees)
+#   one_hot      — binary dummies   (OneHotEncoder; good for linear models)
+# ---------------------------------------------------------------------------
+preprocessing:
+  numeric_transformer: passthrough
+  categorical_transformer: ordinal
+
+# ---------------------------------------------------------------------------
+# Model selection
+# Only the block matching `type` is used for training.
+# Hyperparameters can be changed per-experiment by copying this file.
+# ---------------------------------------------------------------------------
+model:
+  type: lightgbm          # xgboost | lightgbm | random_forest
+  output_name: lgbm_fraud_model  # artifact saved as models/{output_name}.pkl
+
+  xgboost:
+    n_estimators: 500
+    max_depth: 6
+    learning_rate: 0.05
+    subsample: 0.8
+    colsample_bytree: 0.8
+    tree_method: hist
+    eval_metric: aucpr
+    early_stopping_rounds: 30
+    verbosity: 0
+    random_state: 42
+
+  lightgbm:
+    n_estimators: 500
+    num_leaves: 63
+    max_depth: -1
+    learning_rate: 0.05
+    subsample: 0.8
+    colsample_bytree: 0.8
+    early_stopping_rounds: 30
+    verbosity: -1
+    random_state: 42
+
+  random_forest:
+    n_estimators: 300
+    max_depth: 12
+    min_samples_leaf: 20
+    max_features: sqrt
+    n_jobs: -1
+    random_state: 42
+
+# ---------------------------------------------------------------------------
+# Decision threshold
+# Applied to OOT / validation probabilities after training.
+# ---------------------------------------------------------------------------
+threshold:
+  strategy: recall_target   # recall_target | fixed
+  target_recall: 0.80       # used when strategy=recall_target
+  fixed_value: 0.5          # used when strategy=fixed
+
+# ---------------------------------------------------------------------------
+# Probability Calibration
+#
+# Calibration corrects the raw model scores so that a predicted probability
+# of 0.p actually corresponds to ~p% of events being fraud. This is critical
+# for downstream risk-based decisioning (e.g. setting dollar-value thresholds
+# or combining scores from multiple models).
+#
+# How it works:
+#   A separate calibration set is carved out of the TRAINING portion before
+#   the base model is fitted, so there is strictly zero overlap between the
+#   calibration data and the OOT evaluation set.
+#   The base model is trained on train[:-n_calib] rows;
+#   the calibrator is fitted on train[-n_calib:] rows (most recent, if temporal).
+#   Threshold-finding and all OOT metrics use the calibrated probabilities.
+#
+# method options:
+#   none             — disable calibration, use raw model probabilities
+#   sigmoid          — Platt scaling (logistic regression on top of raw scores);
+#                      good for small calibration sets and well-separated scores
+#   isotonic         — non-parametric monotone fit; better for larger datasets
+#                      but can overfit on small calibration sets
+#   beta             — Beta calibration (requires betacal package);
+#                      generally best for [0,1]-bounded outputs; falls back to
+#                      isotonic if betacal is not installed
+#
+# calib_fraction:
+#   Fraction of the training set reserved for fitting the calibrator.
+#   Recommended: 0.15 – 0.25.  Too small → noisy calibration.
+#                              Too large → less data for the base model.
+# ---------------------------------------------------------------------------
+calibration:
+  enabled: true
+  method: isotonic       # none | sigmoid | isotonic | beta
+  calib_fraction: 0.20   # fraction of training rows used for calibrator fitting
+  calib_seed: 42         # random seed for stratified calib/base-train split
+
+# ---------------------------------------------------------------------------
+# MLflow experiment tracking & model registry
+#
+# tracking_uri:
+#   "mlruns"           — local file-based store (relative to project root)
+#   "http://host:5000" — remote MLflow Tracking Server
+#
+# register_model:
+#   true  — every training run registers a new model version under
+#           `model_registry_name` in the MLflow Model Registry
+#   false — model is logged as a run artifact only (no registry entry)
+#
+# run_name:
+#   null  — auto-generated as "<model_type>_<output_name>" (recommended)
+#   str   — fixed run name (all runs will share the same name)
+#
+# tags:
+#   arbitrary key/value pairs added to every MLflow run
+#   e.g.  owner: fraud-team
+#         env: dev
+# ---------------------------------------------------------------------------
+mlflow:
+  tracking_uri: sqlite:///mlflow.db
+  experiment_name: Fraud Model v1
+  run_name: null
+  register_model: true
+  model_registry_name: lgbm_fraud_model
+  tags: {}

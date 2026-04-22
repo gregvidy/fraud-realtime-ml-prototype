@@ -129,7 +129,7 @@ preprocessing:
 # ---------------------------------------------------------------------------
 model:
   type: xgboost          # xgboost | lightgbm | random_forest
-  output_name: fraud_model  # artifact saved as models/{output_name}.pkl
+  output_name: xgboost_fraud_model  # artifact saved as models/{output_name}.pkl
 
   xgboost:
     n_estimators: 500
@@ -207,3 +207,32 @@ calibration:
   method: isotonic       # none | sigmoid | isotonic | beta
   calib_fraction: 0.20   # fraction of training rows used for calibrator fitting
   calib_seed: 42         # random seed for stratified calib/base-train split
+
+# ---------------------------------------------------------------------------
+# MLflow experiment tracking & model registry
+#
+# tracking_uri:
+#   "mlruns"           — local file-based store (relative to project root)
+#   "http://host:5000" — remote MLflow Tracking Server
+#
+# register_model:
+#   true  — every training run registers a new model version under
+#           `model_registry_name` in the MLflow Model Registry
+#   false — model is logged as a run artifact only (no registry entry)
+#
+# run_name:
+#   null  — auto-generated as "<model_type>_<output_name>" (recommended)
+#   str   — fixed run name (all runs will share the same name)
+#
+# tags:
+#   arbitrary key/value pairs added to every MLflow run
+#   e.g.  owner: fraud-team
+#         env: dev
+# ---------------------------------------------------------------------------
+mlflow:
+  tracking_uri: sqlite:///mlflow.db
+  experiment_name: Fraud Model v1
+  run_name: null
+  register_model: true
+  model_registry_name: xgboost_fraud_model
+  tags: {}
