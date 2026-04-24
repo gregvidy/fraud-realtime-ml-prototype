@@ -1,4 +1,4 @@
-.PHONY: help setup infra-up infra-down seed-data reseed-data append-data _truncate-raw dbt-run feast-apply materialize train train-only start-api start-api-dev stop-api stream-events score-test load-test load-test-ui clean export-to-duckdb offline-pipeline migrate-db mlflow-ui promote-model list-models
+.PHONY: help setup infra-up infra-down seed-data reseed-data append-data _truncate-raw dbt-run feast-apply materialize train train-only train-isolated train-only-isolated start-api start-api-dev stop-api stream-events score-test load-test load-test-ui clean export-to-duckdb offline-pipeline migrate-db mlflow-ui promote-model list-models docker-stats
 
 CONDA_ENV := fraud-realtime-ml
 CONDA_PREFIX := $(shell conda info --base)/envs/$(CONDA_ENV)
@@ -169,6 +169,60 @@ train-only:
 		|| (echo "ERROR: training/datasets/training_dataset.parquet not found. Run 'make train' first."; exit 1)
 	$(PYTHON) training/train_model.py $(if $(CONFIG),--config $(CONFIG),)
 	$(PYTHON) training/evaluate_model.py
+
+# Demo: run full training pipeline capped at 4 cores (400%) via cpulimit.
+# Simulates the "training node pool" CPU budget on a single machine.
+# Install: brew install cpulimit
+train-isolated:
+	@command -v cpulimit >/dev/null 2>&1 || (echo "cpulimit not found — run: brew install cpulimit"; exit 1)
+	@echo "[DEMO] Training node plane — capped at 400% CPU (4 cores)"
+	cpulimit --limit 400 --include-children -- \
+		sh -c '$(PYTHON) training/build_training_dataset.py $(if $(DB_PATH),--db-path $(DB_PATH),) $(if $(SAMPLE),--sample-frac $(SAMPLE),) && \
+		       $(PYTHON) training/train_model.py $(if $(CONFIG),--config $(CONFIG),) && \
+		       $(PYTHON) training/evaluate_model.py'
+
+# Demo: train-only variant (reuses existing parquet) capped at 4 cores.
+train-only-isolated:
+	@command -v cpulimit >/dev/null 2>&1 || (echo "cpulimit not found — run: brew install cpulimit"; exit 1)
+	@test -f training/datasets/training_dataset.parquet \
+		|| (echo "ERROR: training/datasets/training_dataset.parquet not found. Run 'make train' first."; exit 1)
+	@echo "[DEMO] Training node plane — capped at 400% CPU (4 cores)"
+	cpulimit --limit 400 --include-children -- \
+		sh -c '$(PYTHON) training/train_model.py $(if $(CONFIG),--config $(CONFIG),) && \
+		       $(PYTHON) training/evaluate_model.py'
+
+# Demo: live per-process CPU/memory usage (works with native Homebrew services + gunicorn).
+# Open in a dedicated terminal during the demo. Updates every 2 seconds.
+# Serving plane: gunicorn (API), postgres, redis-server
+# Training plane: python training scripts
+docker-stats:
+	@echo "NOTE: Running without Docker — showing native process stats (serving vs training plane)"
+	@echo "-------------------------------------------------------------------------------------"
+	@while true; do \
+		clear; \
+		echo "=== SERVING PLANE ==="; \
+		printf "%-40s %6s %6s\n" "PROCESS" "%CPU" "%MEM"; \
+		ps aux | awk '/gunicorn|uvicorn/ && !/awk|grep/' | \
+			awk '{cmd=$$0; sub(/.*gunicorn /,"gunicorn ",cmd); sub(/.*uvicorn /,"uvicorn ",cmd); printf "%-40s %6s %6s\n", substr(cmd,1,40), $$3, $$4}'; \
+		ps aux | awk '/postgres/ && !/awk|grep/' | head -2 | \
+			awk '{printf "%-40s %6s %6s\n", "postgres", $$3, $$4}'; \
+		ps aux | awk '/redis-server/ && !/awk|grep/' | head -1 | \
+			awk '{printf "%-40s %6s %6s\n", "redis-server", $$3, $$4}'; \
+		echo ""; \
+		echo "=== TRAINING PLANE ==="; \
+		printf "%-40s %6s %6s\n" "PROCESS" "%CPU" "%MEM"; \
+		FOUND=0; \
+		ps aux | awk '/train_model|build_training|evaluate_model/ && !/awk|grep/' | while read line; do \
+			FOUND=1; \
+			echo "$$line" | awk '{for(i=11;i<=NF;i++) cmd=cmd" "$$i; printf "%-40s %6s %6s\n", substr(cmd,1,40), $$3, $$4}'; \
+		done; \
+		ps aux | awk '/cpulimit/ && !/awk|grep/' | head -1 | \
+			awk '{printf "%-40s %6s %6s\n", "cpulimit [training guard]", $$3, $$4}'; \
+		ps aux | grep -qE "train_model|build_training|evaluate_model" || echo "(no training job running)"; \
+		echo ""; \
+		echo "Updated: $$(date '+%H:%M:%S') — Ctrl+C to exit"; \
+		sleep 2; \
+	done
 
 mlflow-ui:
 	@echo "Opening MLflow UI → http://localhost:$(MLFLOW_PORT)"

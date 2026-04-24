@@ -1,0 +1,23 @@
+artifact_path: /Users/gregvidy/Personal Project/fraud-realtime-ml-prototype/mlruns/1/models/m-bc91a4bde7be43e8bb21eb95a75a6750/artifacts
+flavors:
+  python_function:
+    env:
+      conda: conda.yaml
+      virtualenv: python_env.yaml
+    loader_module: mlflow.sklearn
+    model_path: model.pkl
+    predict_fn: predict
+    python_version: 3.11.15
+  sklearn:
+    code: null
+    pickled_model: model.pkl
+    serialization_format: cloudpickle
+    sklearn_version: 1.4.2
+    skops_trusted_types: null
+mlflow_version: 3.11.1
+model_id: m-bc91a4bde7be43e8bb21eb95a75a6750
+model_size_bytes: 13685
+model_uuid: m-bc91a4bde7be43e8bb21eb95a75a6750
+prompts: null
+run_id: 7b31ff8f43574baabb34e0a9a24bceaa
+utc_time_created: '2026-04-23 03:53:03.950668'
