@@ -36,7 +36,6 @@ htmlcov/
 # macOS
 .DS_Store
 
-.zip
-.tar.gz
-./aws
-.pem
+*.zip
+*.tar.gz
+*.pem
