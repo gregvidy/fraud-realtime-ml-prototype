@@ -51,10 +51,10 @@ class FraudScoringUser(HttpUser):
     latency budget per user. With <100 ms latency target, each user can
     issue ~10 req/s, so 300 users → ~3 000 req/s headroom; ramp slowly.
 
-    Use constant_throughput(1) to target exactly 1 req/s per user
-    (= total TPS ≈ concurrency).  Set USERS=300 → ~300 TPS.
+    Use constant_throughput(2) to target exactly 2 req/s per user
+    (= total TPS ≈ 2×concurrency).  Set USERS=250 → ~500 TPS.
     """
-    wait_time = constant_throughput(1)  # 1 request/second per simulated user
+    wait_time = constant_throughput(2)  # 2 requests/second per simulated user
 
     @task
     def score(self):

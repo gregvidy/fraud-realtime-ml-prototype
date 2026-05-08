@@ -1,0 +1,3 @@
+# Deploy artifacts — do not commit
+.instance-info
+*.pem

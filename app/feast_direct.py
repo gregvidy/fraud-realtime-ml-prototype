@@ -46,6 +46,7 @@ Redis hash value format:
 
 import logging
 import struct
+import os
 from typing import Any
 
 import mmh3
@@ -66,9 +67,9 @@ def _get_raw_redis() -> aioredis.Redis:
     global _raw_redis_pool, _raw_redis_client
     if _raw_redis_client is None:
         _raw_redis_pool = aioredis.ConnectionPool(
-            host="localhost",
-            port=6379,
-            db=0,
+            host=os.getenv("REDIS_HOST", "localhost"),
+            port=int(os.getenv("REDIS_PORT", 6379)),
+            db=int(os.getenv("REDIS_DB", 0)),
             max_connections=50,
             decode_responses=False,   # binary — do NOT change
         )

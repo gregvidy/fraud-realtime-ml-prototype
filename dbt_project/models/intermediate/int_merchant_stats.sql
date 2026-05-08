@@ -5,6 +5,7 @@
 
 -- int_merchant_stats.sql
 -- Per-merchant rolling window stats (fraud rate, volume, avg ticket).
+-- Uses DuckDB RANGE window frames to avoid expensive self-joins.
 
 WITH txns AS (
     SELECT * FROM {{ ref('stg_transactions') }}
@@ -22,45 +23,32 @@ txns_with_label AS (
     LEFT JOIN labels l USING (transaction_id)
 ),
 
-{% if is_incremental() %}
-anchor_with_label AS (
-    SELECT * FROM txns_with_label
-    WHERE event_timestamp > (SELECT MAX(event_timestamp) FROM {{ this }})
-),
-{% else %}
-anchor_with_label AS (
-    SELECT * FROM txns_with_label
-),
-{% endif %}
-
 merchant_stats AS (
     SELECT
-        t.transaction_id,
-        t.merchant_id,
-        t.event_timestamp,
+        transaction_id,
+        merchant_id,
+        event_timestamp,
 
-        COUNT(*) FILTER (
-            WHERE h.event_timestamp >= t.event_timestamp - INTERVAL '30 days'
-              AND h.event_timestamp <  t.event_timestamp
-        )                               AS merchant_txn_count_30d,
+        COUNT(*) OVER w               AS merchant_txn_count_30d,
 
         COALESCE(
-            AVG(h.amount::FLOAT) FILTER (
-                WHERE h.event_timestamp >= t.event_timestamp - INTERVAL '30 days'
-                  AND h.event_timestamp <  t.event_timestamp
-            ), 0
-        )                               AS merchant_avg_ticket_30d,
+            AVG(amount::FLOAT) OVER w, 0
+        )                              AS merchant_avg_ticket_30d,
 
         COALESCE(
-            AVG(h.is_fraud::INT::FLOAT) FILTER (
-                WHERE h.event_timestamp >= t.event_timestamp - INTERVAL '30 days'
-                  AND h.event_timestamp <  t.event_timestamp
-            ), 0
-        )                               AS merchant_fraud_rate_30d
+            AVG(is_fraud::INT::FLOAT) OVER w, 0
+        )                              AS merchant_fraud_rate_30d
 
-    FROM anchor_with_label t
-    JOIN txns_with_label h ON h.merchant_id = t.merchant_id
-    GROUP BY t.transaction_id, t.merchant_id, t.event_timestamp
+    FROM txns_with_label
+    WINDOW w AS (
+        PARTITION BY merchant_id
+        ORDER BY event_timestamp
+        RANGE BETWEEN INTERVAL '30 days' PRECEDING
+                  AND INTERVAL '1 microsecond' PRECEDING
+    )
 )
 
 SELECT * FROM merchant_stats
+{% if is_incremental() %}
+WHERE event_timestamp > (SELECT MAX(event_timestamp) FROM {{ this }})
+{% endif %}

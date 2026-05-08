@@ -1,4 +1,4 @@
-.PHONY: help setup infra-up infra-down seed-data reseed-data append-data _truncate-raw dbt-run feast-apply materialize train train-only train-isolated train-only-isolated start-api start-api-dev stop-api stream-events score-test load-test load-test-ui clean export-to-duckdb offline-pipeline migrate-db mlflow-ui promote-model list-models docker-stats
+.PHONY: help setup infra-up infra-down seed-data reseed-data append-data _truncate-raw dbt-run feast-apply materialize train train-only train-isolated train-only-isolated start-api start-api-dev stop-api stream-events score-test load-test load-test-ui clean export-to-duckdb offline-pipeline migrate-db mlflow-ui promote-model alias-model list-models docker-stats
 
 CONDA_ENV := fraud-realtime-ml
 CONDA_PREFIX := $(shell conda info --base)/envs/$(CONDA_ENV)
@@ -45,8 +45,10 @@ help:
 	@echo "  make promote-model RUN_ID=<id>         Promote a run to be the active /score model"
 	@echo "  make promote-model RUN_ID=<id> ALIAS=production  Promote with a custom alias"
 	@echo "  make promote-model MODEL_NAME=fraud_model VERSION=3  Promote a registry version"
-	@echo "  make promote-model RUN_ID=<id> DRY_RUN=1  Preview without making changes"
-	@echo "  make start-api      Start the FastAPI scoring service"
+	@echo "  make promote-model RUN_ID=<id> DRY_RUN=1  Preview without making changes"	@echo "  make alias-model MODEL=<name> VERSION=<n> ALIAS=<alias>  Set alias without re-promoting"
+	@echo "    Common aliases: champion | challenger | archived"
+	@echo "    e.g.  make alias-model MODEL=lgbm_fraud_model VERSION=7 ALIAS=challenger"
+	@echo "    e.g.  make alias-model MODEL=rf_fraud_model VERSION=1 ALIAS=archived"	@echo "  make start-api      Start the FastAPI scoring service"
 	@echo "  make stream-events  Start the transaction stream simulator"
 	@echo "  make score-test     Send a test scoring request"
 	@echo "  make clean          Remove generated artifacts"
@@ -123,9 +125,17 @@ append-data:
 		$(if $(FRAUD_RATE_MAX),--fraud-rate-max $(FRAUD_RATE_MAX),) \
 		$(if $(SEED),--seed $(SEED),)
 
+# Export raw Postgres tables → DuckDB offline store
+export-to-duckdb:
+	$(PYTHON) scripts/export_pg_to_duckdb.py $(if $(DB_PATH),--db-path $(DB_PATH),)
+
 dbt-run:
 	cd dbt_project && $(DBT) run --profiles-dir . --target duckdb
 	cd dbt_project && $(DBT) test --profiles-dir . --target duckdb
+
+# Export DuckDB feature tables to Parquet + materialize into Redis
+materialize:
+	$(PYTHON) scripts/materialize_features.py $(if $(DAYS),--days $(DAYS),)
 
 dbt-docs:
 	cd dbt_project && $(DBT) docs generate --profiles-dir . --target duckdb
@@ -137,27 +147,24 @@ dbt-show:
 feast-apply:
 	cd feast_repo/feature_repo && $(FEAST) apply
 
-# Export DuckDB feature tables to Parquet + materialize into Redis
-materialize:
-	$(PYTHON) scripts/materialize_features.py $(if $(DAYS),--days $(DAYS),)
-
-# Export raw Postgres tables → DuckDB offline store
-export-to-duckdb:
-	$(PYTHON) scripts/export_pg_to_duckdb.py $(if $(DB_PATH),--db-path $(DB_PATH),)
-
 # Full offline pipeline: export → dbt → feast materialize
 offline-pipeline: export-to-duckdb dbt-run materialize
 
 # Apply SQL migrations to Postgres (run once after upgrading)
+POSTGRES_CONTAINER ?= fraud_postgres
+
 migrate-db:
 	@set -a && . ./.env 2>/dev/null || true && set +a && \
-	PGPASSWORD="$${POSTGRES_PASSWORD:-fraud_pass}" psql \
-		-h "$${POSTGRES_HOST:-localhost}" \
-		-p "$${POSTGRES_PORT:-5432}" \
-		-U "$${POSTGRES_USER:-fraud_user}" \
-		-d "$${POSTGRES_DB:-fraud_db}" \
-		-f sql/migrations/02_add_feature_service_version.sql
-	@echo "Migration applied."
+	for f in sql/migrations/*.sql; do \
+		echo "Applying $$f …"; \
+		docker exec -i $(POSTGRES_CONTAINER) \
+			env PGPASSWORD="$${POSTGRES_PASSWORD:-fraud_pass}" \
+			psql \
+				-U "$${POSTGRES_USER:-fraud_user}" \
+				-d "$${POSTGRES_DB:-fraud_db}" \
+			< "$$f" || exit 1; \
+	done
+	@echo "All migrations applied."
 
 train:
 	$(PYTHON) training/build_training_dataset.py $(if $(DB_PATH),--db-path $(DB_PATH),) $(if $(SAMPLE),--sample-frac $(SAMPLE),)
@@ -239,9 +246,29 @@ promote-model:
 		$(if $(ALIAS),--alias $(ALIAS),) \
 		$(if $(DRY_RUN),--dry-run,)
 
+alias-model:
+	@if [ -z "$(MODEL)" ] || [ -z "$(VERSION)" ] || [ -z "$(ALIAS)" ]; then \
+		echo "Usage: make alias-model MODEL=<registry_name> VERSION=<n> ALIAS=<alias>"; \
+		echo "  Common aliases: champion | challenger | archived"; \
+		echo "  Example: make alias-model MODEL=lgbm_fraud_model VERSION=7 ALIAS=challenger"; \
+		echo "  Example: make alias-model MODEL=rf_fraud_model VERSION=1 ALIAS=archived"; \
+		exit 1; \
+	fi
+	$(PYTHON) scripts/promote_model.py \
+		--set-alias \
+		--model-name $(MODEL) \
+		--version $(VERSION) \
+		--alias $(ALIAS) \
+		$(if $(DRY_RUN),--dry-run,)
+
+# Async uvicorn workers handle concurrency via the event loop — 4 workers
+# saturate most machines.  Override: make start-api API_WORKERS=6
+API_WORKERS ?= 4
+
 start-api:
+	OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
 	$(GUNICORN) app.main:app \
-		-w 4 \
+		-w $(API_WORKERS) \
 		-k uvicorn.workers.UvicornWorker \
 		--bind 0.0.0.0:8000 \
 		--worker-connections 1000 \
@@ -256,23 +283,23 @@ stop-api:
 	@lsof -ti :8000 | xargs kill 2>/dev/null && echo "API stopped" || echo "Nothing running on port 8000"
 
 # Load testing — targets ~300 TPS by default
-# Override: make load-test USERS=500 RATE=50 DURATION=120s HOST=http://localhost:8000
+# Override: make load-test USERS=500 RATE=50 DURATION=120s API_HOST=http://localhost:8000
 LOCUST   := $(CONDA_PREFIX)/bin/locust
-USERS    ?= 300
-RATE     ?= 30
+USERS    ?= 500
+RATE     ?= 50
 DURATION ?= 60s
-HOST     ?= http://localhost:8000
+API_HOST ?= http://localhost:8000
 
 load-test:
 	$(LOCUST) -f locustfile.py --headless \
 		-u $(USERS) -r $(RATE) \
 		--run-time $(DURATION) \
-		--host $(HOST) \
+		--host $(API_HOST) \
 		--only-summary
 
 load-test-ui:
 	@echo "Open http://localhost:8089 in your browser, then configure users + host"
-	$(LOCUST) -f locustfile.py --host $(HOST)
+	$(LOCUST) -f locustfile.py --host $(API_HOST)
 
 stream-events:
 	$(PYTHON) simulator/stream_transactions.py
@@ -292,3 +319,33 @@ clean:
 	rm -rf training/datasets/
 	rm -rf data/duckdb/*.duckdb data/duckdb/*.wal data/duckdb/parquet/*.parquet
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
+
+# ==============================================================================
+# Cloud Deployment (AWS)
+# ==============================================================================
+deploy-aws:
+	@echo "Deploying Fraud ML Demo to AWS..."
+	./deploy/deploy-aws.sh $(REGION)
+
+deploy-push:
+	@echo "Pushing project to remote server..."
+	./deploy/push-to-server.sh $(HOST)
+
+deploy-stop:
+	./deploy/stop-server.sh --stop
+
+deploy-start:
+	./deploy/stop-server.sh --start
+
+deploy-terminate:
+	./deploy/stop-server.sh --terminate
+
+# Build and run production stack locally (for testing before cloud deploy)
+deploy-local:
+	docker compose -f deploy/docker-compose.prod.yml up -d --build
+	@echo ""
+	@echo "API running at http://localhost:8000"
+	@echo "Run: make load-test"
+
+deploy-local-down:
+	docker compose -f deploy/docker-compose.prod.yml down

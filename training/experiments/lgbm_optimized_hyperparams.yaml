@@ -1,0 +1,164 @@
+# ============================================================
+# Fraud Model — LightGBM Optimized Hyperparameters
+#
+# Changes vs lgbm_v1.yaml and rationale:
+#
+#   metric: average_precision
+#     lgbm_v1 used the default binary_logloss for early stopping.
+#     With scale_pos_weight=79.5, logloss is dominated by the majority class
+#     and barely moves after iteration 1, causing early stopping to fire
+#     immediately. average_precision directly measures discrimination on the
+#     minority class and gives a far more informative gradient signal.
+#
+#   learning_rate: 0.01  (was 0.05)
+#     Lower LR allows the model to keep improving across hundreds of rounds
+#     instead of overshooting. Compensated by raising n_estimators.
+#
+#   n_estimators: 3000  (was 500)
+#     More headroom now that early stopping monitors a meaningful metric.
+#     early_stopping_rounds will find the actual optimum.
+#
+#   early_stopping_rounds: 100  (was 30)
+#     More patience to distinguish genuine plateaus from noise, especially
+#     important with average_precision which has higher variance than logloss.
+#
+#   num_leaves: 127  (was 63)
+#     Deeper trees capture higher-order feature interactions (e.g. velocity
+#     burst + high-risk merchant + new account combined signals).
+#
+#   min_child_samples: 10  (was default 20)
+#     Default of 20 prevents splits on leaves with < 20 weighted samples.
+#     With 1.24% fraud and pos_weight=79.5 the effective minority leaf size
+#     can be too small for useful splits. Lowering to 10 allows the model to
+#     learn rare but high-signal fraud sub-patterns.
+#
+#   reg_alpha: 0.1, reg_lambda: 5.0
+#     L1 + L2 regularization to counteract the increased tree complexity
+#     from larger num_leaves and smaller min_child_samples.
+#
+#   colsample_bytree: 0.7  (was 0.8), colsample_bynode: 0.7  (new)
+#     More aggressive feature sampling per split reduces correlation between
+#     trees and improves generalization on the imbalanced dataset.
+#
+# Usage:
+#   make train-only CONFIG=experiments/lgbm_optimized_hyperparams.yaml
+# ============================================================
+
+data:
+  path: training/datasets/training_dataset.parquet
+  timestamp_col: event_timestamp
+  label_col: is_fraud
+  fillna_value: 0
+
+split:
+  method: temporal
+  cutoff_date: null
+  cutoff_quantile: 0.80
+  random_test_size: 0.20
+  random_seed: 42
+
+features:
+  numeric:
+    # Request-time
+    - txn_amount
+    - is_international
+    - local_hour
+    # User — offline (batch)
+    - user_account_age_days
+    - user_is_verified
+    - user_is_standard_account
+    - user_txn_count_1d
+    - user_txn_count_7d
+    - user_txn_count_30d
+    - user_txn_amount_sum_1d
+    - user_txn_amount_sum_7d
+    - user_txn_amount_sum_30d
+    - user_avg_ticket_30d
+    - user_distinct_merchants_30d
+    - user_distinct_devices_30d
+    - user_decline_count_7d
+    - user_failed_logins_7d
+    - user_failed_logins_1d
+    # Device — offline (batch)
+    - device_distinct_users_30d
+    - device_txn_count_7d
+    - device_txn_count_1d
+    - device_is_shared_flag
+    # Merchant — offline (batch)
+    - merchant_is_high_risk
+    - merchant_is_online
+    - merchant_txn_count_30d
+    - merchant_avg_ticket_30d
+    - merchant_fraud_rate_30d
+    # User — online (reconstructed via dbt window functions / Redis at serving)
+    - user_txn_count_5m
+    - user_txn_count_10m
+    - user_txn_count_1h
+    - user_txn_amount_sum_5m
+    - user_txn_amount_sum_10m
+    - user_txn_amount_sum_1h
+    - user_distinct_merchants_5m
+    - user_distinct_merchants_10m
+    - user_distinct_merchants_1h
+    # Device — online
+    - device_txn_count_5m
+    - device_txn_count_10m
+    - device_txn_count_1h
+    # Login — online
+    - user_failed_logins_15m
+    - user_failed_logins_1h
+
+  categorical: []
+
+preprocessing:
+  numeric_transformer: passthrough
+  categorical_transformer: ordinal
+
+model:
+  type: lightgbm
+  output_name: lgbm_optimized_model
+
+  lightgbm:
+    n_estimators: 3000
+    num_leaves: 127
+    max_depth: -1
+    learning_rate: 0.01
+    min_child_samples: 10
+    subsample: 0.8
+    subsample_freq: 1
+    colsample_bytree: 0.7
+    colsample_bynode: 0.7
+    reg_alpha: 0.1
+    reg_lambda: 5.0
+    metric: average_precision
+    early_stopping_rounds: 100
+    verbosity: -1
+    random_state: 42
+
+threshold:
+  strategy: recall_target
+  target_recall: 0.80
+  fixed_value: 0.5
+
+calibration:
+  enabled: true
+  method: isotonic
+  calib_fraction: 0.20
+  calib_seed: 42
+
+mlflow:
+  tracking_uri: sqlite:///mlflow.db
+  experiment_name: Fraud Model v1
+  # run_name null → auto-generated as "<model_type>_<timestamp>_<config_hash>"
+  # (see Option 4 in train_model.py)
+  run_name: null
+  register_model: true
+  # Option 2: dedicated registry entry — keeps this variant's version history
+  # separate from the baseline lgbm_fraud_model
+  model_registry_name: lgbm_optimized_hyperparams
+  # Option 3: alias assigned to this version after registration
+  # champion | challenger | archived — null to skip alias assignment
+  model_alias: challenger
+  tags:
+    variant: optimized_hyperparams
+    base_config: lgbm_v1

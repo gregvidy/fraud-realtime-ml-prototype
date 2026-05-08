@@ -57,6 +57,8 @@ DEFAULT_CONFIG = _TRAINING_DIR / "training_config.yaml"
 # ---------------------------------------------------------------------------
 
 def _load_config(path: Path) -> dict:
+    if not path.is_absolute():
+        path = _TRAINING_DIR / path
     with open(path) as f:
         return yaml.safe_load(f)
 
@@ -332,6 +334,9 @@ def _collect_mlflow_params(
 
 def main(config_path: Path) -> None:
     cfg = _load_config(config_path)
+    # Ensure config_path is the resolved absolute path used by _load_config
+    if not config_path.is_absolute():
+        config_path = _TRAINING_DIR / config_path
 
     data_cfg   = cfg["data"]
     split_cfg  = cfg["split"]
@@ -361,11 +366,45 @@ def main(config_path: Path) -> None:
     if "://" not in _tracking_uri:
         _tracking_uri = str(_PROJECT_ROOT / _tracking_uri)
     mlflow.set_tracking_uri(_tracking_uri)
-    mlflow.set_experiment(mlflow_cfg.get("experiment_name", "fraud-detection"))
-    _run_name    = mlflow_cfg.get("run_name") or f"{model_cfg.get('type', 'model')}_{output_name}"
+
+    # Derive artifact root for this machine — always relative to project root.
+    # This self-heals stale absolute paths that were baked into mlflow.db when
+    # the project ran on a different machine (e.g. Mac → Linux path change).
+    _experiment_name     = mlflow_cfg.get("experiment_name", "fraud-detection")
+    _mlruns_dir          = _PROJECT_ROOT / "mlruns"
+    _client              = mlflow.MlflowClient()
+    _existing_experiment = _client.get_experiment_by_name(_experiment_name)
+    if _existing_experiment is not None:
+        _expected_artifact_root = str(_mlruns_dir / _existing_experiment.experiment_id)
+        _stored_artifact_root   = _existing_experiment.artifact_location
+        if _stored_artifact_root != _expected_artifact_root:
+            _client.update_experiment(
+                _existing_experiment.experiment_id,
+                artifact_location=_expected_artifact_root,
+            )
+    else:
+        # Create experiment with an explicit portable artifact location
+        _experiment_id = _client.create_experiment(
+            _experiment_name,
+            artifact_location=str(_mlruns_dir / "0"),
+        )
+
+    mlflow.set_experiment(_experiment_name)
+
+    # Option 4 — auto run name: "<type>_<YYYYMMDD_HHMM>_<config_hash[:6]>"
+    # Gives each run a unique, human-readable identity without manual naming.
+    # Use a fixed run_name in the config to override (e.g. for scheduled jobs).
+    if mlflow_cfg.get("run_name"):
+        _run_name = mlflow_cfg["run_name"]
+    else:
+        import datetime, hashlib
+        _ts   = datetime.datetime.now().strftime("%Y%m%d_%H%M")
+        _hash = hashlib.md5(config_path.read_bytes()).hexdigest()[:6]
+        _run_name = f"{model_cfg.get('type', 'model')}_{_ts}_{_hash}"
+
     _mlflow_tags = {str(k): str(v) for k, v in (mlflow_cfg.get("tags") or {}).items()}
     _mlflow_run  = mlflow.start_run(run_name=_run_name, tags=_mlflow_tags)
-    print(f"MLflow run started  → {_mlflow_run.info.run_id}")
+    print(f"MLflow run started  → {_mlflow_run.info.run_id}  ({_run_name})")
 
     label_col    = data_cfg.get("label_col", "is_fraud")
     ts_col       = data_cfg.get("timestamp_col", "event_timestamp")
@@ -570,6 +609,23 @@ def main(config_path: Path) -> None:
         mlflow.log_artifact(str(calib_path), artifact_path="artifacts")
     # Log training config file so the exact setup is reproducible from the UI
     mlflow.log_artifact(str(config_path), artifact_path="config")
+
+    # Option 3 — alias assignment
+    # Assigns a named alias (e.g. @champion, @challenger, @archived) to the
+    # registered model version just created. Scoring service can load by alias
+    # instead of version number, making promotion a one-line operation.
+    _model_alias = mlflow_cfg.get("model_alias")
+    if _registry_name and _model_alias:
+        # Retrieve the version number that was just registered
+        _registered_versions = _client.search_model_versions(
+            f"name='{_registry_name}'",
+            order_by=["version_number DESC"],
+            max_results=1,
+        )
+        if _registered_versions:
+            _latest_version = _registered_versions[0].version
+            _client.set_registered_model_alias(_registry_name, _model_alias, _latest_version)
+            print(f"Alias set           → {_registry_name}@{_model_alias} = v{_latest_version}")
     # Log feature importances as a JSON artifact for easy comparison across runs
     if hasattr(model, "feature_importances_"):
         _fi_pairs = sorted(

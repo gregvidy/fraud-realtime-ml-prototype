@@ -5,6 +5,7 @@
 
 -- int_user_login_stats.sql
 -- Per-user failed login counts over rolling windows, computed per transaction.
+-- Uses UNION ALL + RANGE window frames to avoid expensive cross-table joins.
 
 WITH logins AS (
     SELECT * FROM {{ ref('stg_login_events') }}
@@ -16,32 +17,38 @@ txns AS (
         user_id,
         event_timestamp
     FROM {{ ref('stg_transactions') }}
-    {% if is_incremental() %}
-    WHERE event_timestamp > (SELECT MAX(event_timestamp) FROM {{ this }})
-    {% endif %}
 ),
 
-login_stats AS (
+events AS (
+    SELECT transaction_id, user_id, event_timestamp, 0 AS is_failed_login
+    FROM txns
+    UNION ALL
+    SELECT NULL AS transaction_id, user_id, event_timestamp, 1 AS is_failed_login
+    FROM logins
+    WHERE login_status = 'failed'
+),
+
+windowed AS (
     SELECT
-        t.transaction_id,
-        t.user_id,
-        t.event_timestamp,
+        transaction_id,
+        user_id,
+        event_timestamp,
 
-        COUNT(*) FILTER (
-            WHERE l.login_status = 'failed'
-              AND l.event_timestamp >= t.event_timestamp - INTERVAL '7 days'
-              AND l.event_timestamp <  t.event_timestamp
-        )                           AS user_failed_logins_7d,
+        COALESCE(SUM(is_failed_login) OVER (
+            PARTITION BY user_id ORDER BY event_timestamp
+            RANGE BETWEEN INTERVAL '7 days' PRECEDING AND INTERVAL '1 microsecond' PRECEDING
+        ), 0) AS user_failed_logins_7d,
 
-        COUNT(*) FILTER (
-            WHERE l.login_status = 'failed'
-              AND l.event_timestamp >= t.event_timestamp - INTERVAL '1 day'
-              AND l.event_timestamp <  t.event_timestamp
-        )                           AS user_failed_logins_1d
+        COALESCE(SUM(is_failed_login) OVER (
+            PARTITION BY user_id ORDER BY event_timestamp
+            RANGE BETWEEN INTERVAL '1 day' PRECEDING AND INTERVAL '1 microsecond' PRECEDING
+        ), 0) AS user_failed_logins_1d
 
-    FROM txns t
-    LEFT JOIN logins l ON l.user_id = t.user_id
-    GROUP BY t.transaction_id, t.user_id, t.event_timestamp
+    FROM events
 )
 
-SELECT * FROM login_stats
+SELECT * FROM windowed
+WHERE transaction_id IS NOT NULL
+{% if is_incremental() %}
+  AND event_timestamp > (SELECT MAX(event_timestamp) FROM {{ this }})
+{% endif %}

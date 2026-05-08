@@ -1,0 +1,24 @@
+artifact_path: /home/gregorius_vidy/gbg_analytics/01 Experimentation/Feature Store
+  Experimentation/fraud-realtime-ml-prototype/mlruns/1/models/m-44b4ea9ac0054cebb1cf27ce685b8cb5/artifacts
+flavors:
+  python_function:
+    env:
+      conda: conda.yaml
+      virtualenv: python_env.yaml
+    loader_module: mlflow.sklearn
+    model_path: model.pkl
+    predict_fn: predict
+    python_version: 3.11.15
+  sklearn:
+    code: null
+    pickled_model: model.pkl
+    serialization_format: cloudpickle
+    sklearn_version: 1.4.2
+    skops_trusted_types: null
+mlflow_version: 3.12.0
+model_id: m-44b4ea9ac0054cebb1cf27ce685b8cb5
+model_size_bytes: 77662
+model_uuid: m-44b4ea9ac0054cebb1cf27ce685b8cb5
+prompts: null
+run_id: b0ac79f7d83d49c3914a41fb73657804
+utc_time_created: '2026-05-07 09:49:37.927194'

@@ -31,4 +31,4 @@ models:
     features:
       +materialized: table
       fct_training_dataset:
-        +tags: ["archived"]
+        +materialized: table

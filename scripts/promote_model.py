@@ -295,6 +295,82 @@ def promote_from_registry(model_name: str, version: int, alias: str, dry_run: bo
 
 
 # ---------------------------------------------------------------------------
+# Set alias only (no artifact copy)
+# ---------------------------------------------------------------------------
+
+def set_alias_only(model_name: str, version: int, alias: str, dry_run: bool) -> None:
+    """Assign an alias to an existing registered model version without touching artifacts.
+
+    Falls back to a direct SQLite write when the MLflow API refuses (e.g. the
+    model version has been soft-deleted / Deleted_Internal state).
+    """
+    import sqlite3
+    tracking_uri = _set_tracking_uri()
+    client = mlflow.MlflowClient()
+
+    # Check whether the version actually exists in the DB (even if soft-deleted)
+    db_path: Path | None = None
+    if tracking_uri.startswith("sqlite:///"):
+        db_path = Path(tracking_uri[len("sqlite:///"):])
+
+    version_exists_in_db = False
+    run_id_in_db = "—"
+    stage_in_db = "—"
+    if db_path and db_path.exists():
+        conn = sqlite3.connect(str(db_path))
+        row = conn.execute(
+            "SELECT run_id, current_stage FROM model_versions WHERE name=? AND version=?",
+            (model_name, str(version)),
+        ).fetchone()
+        conn.close()
+        if row:
+            version_exists_in_db = True
+            run_id_in_db, stage_in_db = row
+
+    if not version_exists_in_db:
+        raise SystemExit(
+            f"ERROR: '{model_name}' v{version} not found in registry.\n"
+            f"  Use 'make list-models' to see registered models."
+        )
+
+    print(f"Model   : {model_name}  v{version}")
+    print(f"Run ID  : {run_id_in_db}  (stage: {stage_in_db})")
+    print(f"Alias   : '{alias}'")
+
+    if dry_run:
+        print(f"[DRY RUN] Would set alias '{alias}' → {model_name} v{version}")
+        return
+
+    # Try the normal MLflow API first (works for non-deleted versions)
+    try:
+        client.set_registered_model_alias(model_name, alias, str(version))
+        print(f"✓ Alias '{alias}' set on {model_name} v{version}")
+        return
+    except Exception:
+        pass  # Fall through to SQLite direct write for deleted versions
+
+    # Direct SQLite fallback — safe for soft-deleted versions
+    if db_path is None or not db_path.exists():
+        raise SystemExit(
+            "ERROR: MLflow API rejected the alias update and no local SQLite DB was found to fall back to.\n"
+            f"  Tracking URI: {tracking_uri}"
+        )
+    conn = sqlite3.connect(str(db_path))
+    # Upsert: delete old alias row then insert new one
+    conn.execute(
+        "DELETE FROM registered_model_aliases WHERE name=? AND alias=?",
+        (model_name, alias),
+    )
+    conn.execute(
+        "INSERT INTO registered_model_aliases (name, alias, version) VALUES (?, ?, ?)",
+        (model_name, alias, str(version)),
+    )
+    conn.commit()
+    conn.close()
+    print(f"✓ Alias '{alias}' set on {model_name} v{version}  (via direct SQLite — version is soft-deleted)")
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -306,7 +382,9 @@ def main() -> None:
             "  python scripts/promote_model.py --list\n"
             "  python scripts/promote_model.py --run-id abc123\n"
             "  python scripts/promote_model.py --model-name fraud_model --version 3\n"
-            "  python scripts/promote_model.py --run-id abc123 --dry-run"
+            "  python scripts/promote_model.py --run-id abc123 --dry-run\n"
+            "  python scripts/promote_model.py --set-alias --model-name lgbm_fraud_model --version 7 --alias challenger\n"
+            "  python scripts/promote_model.py --set-alias --model-name rf_fraud_model --version 1 --alias archived"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -328,11 +406,19 @@ def main() -> None:
     )
     parser.add_argument(
         "--version", type=int, metavar="VERSION",
-        help="Registered model version to promote",
+        help="Registered model version to promote or alias",
     )
     parser.add_argument(
         "--alias", default="champion", metavar="ALIAS",
-        help="MLflow alias / tag to assign to the promoted model (default: champion)",
+        help="MLflow alias to assign (default: champion). Common values: champion, challenger, archived",
+    )
+    parser.add_argument(
+        "--set-alias", action="store_true",
+        help=(
+            "Set an alias on an existing registry version WITHOUT copying artifacts. "
+            "Requires --model-name and --version. "
+            "Example: --set-alias --model-name lgbm_fraud_model --version 7 --alias challenger"
+        ),
     )
     parser.add_argument(
         "--dry-run", action="store_true",
@@ -343,6 +429,10 @@ def main() -> None:
 
     if args.list:
         list_runs(n=args.n)
+    elif args.set_alias:
+        if not args.model_name or args.version is None:
+            parser.error("--set-alias requires --model-name and --version")
+        set_alias_only(args.model_name, args.version, alias=args.alias, dry_run=args.dry_run)
     elif args.run_id:
         promote_from_run(args.run_id, alias=args.alias, dry_run=args.dry_run)
     elif args.model_name and args.version is not None:
@@ -352,6 +442,8 @@ def main() -> None:
         print("\nQuick start:")
         print("  make list-models              # see available runs")
         print("  make promote-model RUN_ID=<id>  # promote a run")
+        print("  make alias-model MODEL=lgbm_fraud_model VERSION=7 ALIAS=challenger")
+        print("  make alias-model MODEL=rf_fraud_model VERSION=1 ALIAS=archived")
 
 
 if __name__ == "__main__":

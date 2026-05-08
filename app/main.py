@@ -41,13 +41,13 @@ async def startup_event():
             user=os.getenv("POSTGRES_USER", "fraud_user"),
             password=os.getenv("POSTGRES_PASSWORD", "fraud_pass"),
             database=os.getenv("POSTGRES_DB", "fraud_db"),
-            min_size=5,
-            max_size=20,
+            min_size=2,
+            max_size=10,
             command_timeout=5,
         )
         await score_logger.init(pool)
         await feature_logger.init(pool)
-        logger.info("DB logging pool initialized (asyncpg, min=5 max=20).")
+        logger.info("DB logging pool initialized (asyncpg, min=2 max=10).")
     except Exception as exc:
         logger.warning("DB pool init failed — score/feature logging disabled: %s", exc)
 
