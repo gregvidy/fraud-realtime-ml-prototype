@@ -22,6 +22,7 @@ the GIL, allowing true parallelism for the inner predict call.
 import asyncio
 import functools
 import logging
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
@@ -35,9 +36,9 @@ from .score_logger import log_score
 
 logger = logging.getLogger(__name__)
 
-# Thread pool for CPU-bound predict_proba (CalibratedClassifierCV ~15-40ms).
-# Sized per-worker: 8 threads gives 8 concurrent predictions per uvicorn worker.
-_predict_pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix="predict")
+# Thread pool for CPU-bound work (predict + vector assembly + np.array).
+# Sized per-worker: 16 threads avoids thread pool queueing at high RPS.
+_predict_pool = ThreadPoolExecutor(max_workers=16, thread_name_prefix="predict")
 
 _RISK_BANDS = [
     (0.80, "critical"),
@@ -58,17 +59,30 @@ def _risk_band(score: float) -> str:
     return "low"
 
 
-def _predict(model, X: np.ndarray) -> float:
+def _predict(model, X: np.ndarray, preprocessor=None) -> float:
     """
-    Run predict_proba in a thread — safe because LightGBM releases the GIL.
-    If calibration arrays exist, apply fast np.interp instead of sklearn's
-    CalibratedClassifierCV (which holds the GIL for 15-40ms).
+    Run preprocess + predict_proba in a thread — keeps event loop free.
+    LightGBM releases the GIL for the C++ predict call.
     """
+    if preprocessor is not None:
+        X = preprocessor.transform(X)
     raw_prob = float(model.predict_proba(X)[0, 1])
     calib_x, calib_y = get_calibration()
     if calib_x is not None:
         return float(np.interp(raw_prob, calib_x, calib_y))
     return raw_prob
+
+
+def _build_and_predict(
+    model, preprocessor, feature_cols, request_features, offline_feats, online_feats,
+) -> float:
+    """
+    All CPU-bound work in one thread pool call: vector assembly + np.array + predict.
+    Keeps the event loop completely free for async Redis I/O.
+    """
+    vector = build_feature_vector(request_features, feature_cols, offline_feats, online_feats)
+    X = np.array([vector], dtype=float)
+    return _predict(model, X, preprocessor)
 
 
 async def score_transaction(request: ScoreRequest) -> ScoreResponse:
@@ -83,6 +97,7 @@ async def score_transaction(request: ScoreRequest) -> ScoreResponse:
     model_name   = meta.get("model_name", "unknown")
 
     # --- Request-time features ---
+    t0 = time.perf_counter()
     now_hour = datetime.now(timezone.utc).hour
     request_features = {
         "txn_amount":       request.amount,
@@ -91,10 +106,12 @@ async def score_transaction(request: ScoreRequest) -> ScoreResponse:
     }
 
     # --- Parallel feature fetches (Phase 2) ---
+    t1 = time.perf_counter()
     (offline_feats, feast_ok), (online_feats, redis_ok) = await asyncio.gather(
         fetch_offline_features(request.user_id, request.device_id, request.merchant_id),
         fetch_online_features(request.user_id, request.device_id),
     )
+    t2 = time.perf_counter()
 
     # --- Log online features for training-serving consistency (non-blocking) ---
     if redis_ok:
@@ -105,27 +122,26 @@ async def score_transaction(request: ScoreRequest) -> ScoreResponse:
             online_features=online_feats,
         )
 
-    # --- Assemble vector ---
-    vector = build_feature_vector(
-        request_features, feature_cols, offline_feats, online_feats
-    )
-
-    # --- Predict (thread pool — frees event loop for concurrent Redis I/O) ---
-    X = np.array([vector], dtype=float)
+    # --- Build vector + predict in thread pool (ALL CPU work off event loop) ---
     preprocessor = get_prep()
-    if preprocessor is not None:
-        X = preprocessor.transform(X)
-
     loop = asyncio.get_running_loop()
     score = await loop.run_in_executor(
         _predict_pool,
-        functools.partial(_predict, model, X),
+        functools.partial(
+            _build_and_predict, model, preprocessor,
+            feature_cols, request_features, offline_feats, online_feats,
+        ),
     )
+    t4 = time.perf_counter()
 
-    logger.debug(
-        "score  txn=%s  user=%s  score=%.4f  feast=%s  redis=%s",
-        request.transaction_id, request.user_id, score, feast_ok, redis_ok,
-    )
+    # --- Stage timing (sampled) ---
+    import random as _rnd
+    if _rnd.random() < 0.10:
+        logger.info(
+            "TIMING  feat_fetch=%.1fms  predict=%.1fms  total=%.1fms  txn=%s",
+            (t2 - t1) * 1000, (t4 - t2) * 1000, (t4 - t0) * 1000,
+            request.transaction_id,
+        )
 
     # --- Log score (non-blocking enqueue) ---
     log_score(

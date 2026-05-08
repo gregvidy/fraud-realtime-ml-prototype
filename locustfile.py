@@ -14,10 +14,20 @@ The synthetic user pool mirrors generate_reference_data.py defaults:
       300 merchants (m_00001 … m_00300)
 """
 
+import os
 import random
 import uuid
 
-from locust import HttpUser, constant_throughput, task
+from locust import HttpUser, constant_throughput, events, task
+
+
+# ---------------------------------------------------------------------------
+# Report server-side processing time instead of round-trip time.
+# When LOCUST_SERVER_TIME=1 (or running on EC2 Docker where header is
+# available), Locust charts show the X-Process-Time-Ms header value,
+# eliminating SSM tunnel / network overhead from reported latency.
+# ---------------------------------------------------------------------------
+_USE_SERVER_TIME = os.getenv("LOCUST_SERVER_TIME", "0") == "1"
 
 
 # ---------------------------------------------------------------------------
@@ -77,6 +87,12 @@ class FraudScoringUser(HttpUser):
             name="/score",
         ) as resp:
             if resp.status_code == 200:
+                if _USE_SERVER_TIME:
+                    server_ms = resp.headers.get("X-Process-Time-Ms")
+                    if server_ms:
+                        # Override BEFORE calling success() — success() fires
+                        # the request event which reads response_time.
+                        resp.request_meta["response_time"] = float(server_ms)
                 resp.success()
             elif resp.status_code == 503:
                 resp.failure("Model not loaded")

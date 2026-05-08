@@ -1,4 +1,4 @@
-.PHONY: help setup infra-up infra-down seed-data reseed-data append-data _truncate-raw dbt-run feast-apply materialize train train-only train-isolated train-only-isolated start-api start-api-dev stop-api stream-events score-test load-test load-test-ui clean export-to-duckdb offline-pipeline migrate-db mlflow-ui promote-model alias-model list-models docker-stats
+.PHONY: help setup infra-up infra-down seed-data reseed-data append-data _truncate-raw dbt-run feast-apply materialize train train-only train-isolated train-only-isolated start-api start-api-dev stop-api stream-events score-test load-test load-test-ui clean export-to-duckdb offline-pipeline migrate-db mlflow-ui promote-model alias-model list-models docker-stats push-artifacts deploy-aws deploy-push deploy-init deploy-stop deploy-start deploy-terminate deploy-local deploy-local-down train-docker train-docker-watch stream-docker stream-docker-stop ssm-setup ssm-shell ssm-tunnel ssm-tunnel-mlflow ssm-tunnel-locust start-remote-locust
 
 CONDA_ENV := fraud-realtime-ml
 CONDA_PREFIX := $(shell conda info --base)/envs/$(CONDA_ENV)
@@ -323,13 +323,64 @@ clean:
 # ==============================================================================
 # Cloud Deployment (AWS)
 # ==============================================================================
+
+## Push ML artifacts (parquet, model, registry) to S3
+push-artifacts:
+	@echo "Pushing ML artifacts to S3..."
+	chmod +x deploy/push-artifacts.sh
+	./deploy/push-artifacts.sh
+
+## Deploy code + pull artifacts from S3 + restart services (lean — no data rebuild)
+deploy-push:
+	@echo "Deploying project via SSM (no SSH required)..."
+	./deploy/push-to-server-ssm.sh $(EC2_HOST)
+
+## First-time: seed EC2 Postgres with reference + historical data
+deploy-init:
+	@echo "Seeding remote Postgres (one-time)..."
+	chmod +x deploy/init-remote-db.sh
+	./deploy/init-remote-db.sh
+
 deploy-aws:
 	@echo "Deploying Fraud ML Demo to AWS..."
-	./deploy/deploy-aws.sh $(REGION)
+	./deploy/deploy-aws.sh $(REGION) $(INSTANCE_TYPE)
 
-deploy-push:
-	@echo "Pushing project to remote server..."
-	./deploy/push-to-server.sh $(HOST)
+## One-time: attach SSM IAM role to running instance
+ssm-setup:
+	@echo "Setting up SSM access..."
+	chmod +x deploy/setup-ssm.sh
+	./deploy/setup-ssm.sh $(EC2_HOST)
+
+## Interactive shell on EC2 over HTTPS (no SSH)
+ssm-shell:
+	aws ssm start-session --region $$(grep REGION deploy/.instance-info | cut -d= -f2) \
+	    --target $$(grep INSTANCE_ID deploy/.instance-info | cut -d= -f2)
+
+## Port-forward EC2 API to localhost:8000 (then run: make load-test-ui API_HOST=http://localhost:8000)
+ssm-tunnel:
+	chmod +x deploy/ssm-tunnel.sh
+	./deploy/ssm-tunnel.sh "" 8000 8000
+
+## Port-forward MLflow to localhost:5000
+ssm-tunnel-mlflow:
+	chmod +x deploy/ssm-tunnel.sh
+	./deploy/ssm-tunnel.sh "" 5000 5000
+
+## Port-forward Locust UI to localhost:8089 (load test runs ON EC2 — true latency)
+ssm-tunnel-locust:
+	chmod +x deploy/ssm-tunnel.sh
+	./deploy/ssm-tunnel.sh "" 8089 8089
+
+## Start Locust on EC2 (run before ssm-tunnel-locust)
+start-remote-locust:
+	@echo "Starting Locust load tester on EC2..."
+	aws ssm send-command \
+		--region $$(grep REGION deploy/.instance-info | cut -d= -f2) \
+		--instance-id $$(grep INSTANCE_ID deploy/.instance-info | cut -d= -f2) \
+		--document-name AWS-RunShellScript \
+		--parameters 'commands=["cd /home/ubuntu/fraud-realtime-ml-prototype && docker compose -f deploy/docker-compose.prod.yml --profile loadtest up -d --force-recreate locust"]' \
+		--output text --query Command.CommandId
+	@echo "Locust UI available at EC2:8089 — run: make ssm-tunnel-locust"
 
 deploy-stop:
 	./deploy/stop-server.sh --stop
@@ -349,3 +400,33 @@ deploy-local:
 
 deploy-local-down:
 	docker compose -f deploy/docker-compose.prod.yml down
+
+# Run training pipeline inside Docker (isolated from API, capped at 4 CPU / 6GB RAM)
+# Usage: make train-docker
+#        make train-docker CONFIG=training/experiments/lgbm_optimized_hyperparams.yaml
+#        make train-docker SAMPLE=0.3
+train-docker:
+	@echo "[DOCKER] Starting isolated training container (4 CPU / 6GB RAM limit)..."
+	CONFIG=$(CONFIG) SAMPLE=$(SAMPLE) \
+	docker compose -f deploy/docker-compose.prod.yml \
+		--profile training run --rm training
+	@echo "[DOCKER] Training complete. Model artifacts saved to models/"
+
+# Run training + show live resource usage side-by-side
+train-docker-watch:
+	@echo "Open another terminal and run: make docker-stats"
+	$(MAKE) train-docker CONFIG=$(CONFIG) SAMPLE=$(SAMPLE)
+
+# Start transaction stream simulator inside Docker (writes to Redis sorted sets)
+# Usage: make stream-docker
+#        make stream-docker EPS=20
+stream-docker:
+	@echo "[DOCKER] Starting transaction stream simulator ($(or $(EPS),10) events/sec)..."
+	SIM_EVENTS_PER_SECOND=$(or $(EPS),10) \
+	docker compose -f deploy/docker-compose.prod.yml \
+		--profile simulator up -d simulator
+	@echo "[DOCKER] Simulator running. View logs: docker logs -f fraud_simulator"
+
+stream-docker-stop:
+	docker compose -f deploy/docker-compose.prod.yml --profile simulator stop simulator
+	@echo "[DOCKER] Simulator stopped."

@@ -4,11 +4,12 @@ app/main.py — FastAPI scoring service for fraud detection.
 
 import logging
 import os
+import time
 
 import asyncpg
 import redis as redis_lib
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from . import feature_logger, score_logger
@@ -29,6 +30,23 @@ app = FastAPI(
     description="Real-time fraud score endpoint backed by XGBoost + Feast + Redis.",
     version="1.0.0",
 )
+
+# Use orjson for ~5x faster JSON response serialization if available
+try:
+    import orjson
+    from fastapi.responses import ORJSONResponse
+    app.router.default_response_class = ORJSONResponse
+except ImportError:
+    pass
+
+
+@app.middleware("http")
+async def add_process_time_header(request: Request, call_next):
+    start = time.perf_counter()
+    response = await call_next(request)
+    elapsed_ms = (time.perf_counter() - start) * 1000
+    response.headers["X-Process-Time-Ms"] = f"{elapsed_ms:.1f}"
+    return response
 
 
 @app.on_event("startup")

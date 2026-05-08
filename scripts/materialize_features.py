@@ -121,8 +121,11 @@ def materialize(days: int) -> None:
     print("Materialization complete.")
 
 
-def main(db_path: Path, days: int) -> None:
-    export_parquet(db_path)
+def main(db_path: Path, days: int, skip_export: bool = False) -> None:
+    if skip_export:
+        print("Skipping DuckDB export (using existing parquet files)")
+    else:
+        export_parquet(db_path)
     materialize(days)
 
 
@@ -140,5 +143,10 @@ if __name__ == "__main__":
         default=0,
         help="Number of days back to materialize (default: 0 = auto-detect from parquet data range)",
     )
+    parser.add_argument(
+        "--skip-export",
+        action="store_true",
+        help="Skip DuckDB→Parquet export (use when parquet files already exist from S3)",
+    )
     args = parser.parse_args()
-    main(args.db_path, args.days)
+    main(args.db_path, args.days, skip_export=args.skip_export)
