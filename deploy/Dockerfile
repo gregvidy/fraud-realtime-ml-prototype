@@ -15,6 +15,9 @@ FROM python:3.11-slim AS runtime
 
 WORKDIR /app
 
+# LightGBM requires OpenMP runtime
+RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 && rm -rf /var/lib/apt/lists/*
+
 # Copy installed packages from builder
 COPY --from=builder /install /usr/local
 
@@ -42,13 +45,13 @@ HEALTHCHECK --interval=10s --timeout=3s --retries=3 \
 
 # Gunicorn with uvicorn workers — production grade
 CMD ["gunicorn", "app.main:app", \
-     "-w", "4", \
+     "-w", "12", \
      "-k", "uvicorn.workers.UvicornWorker", \
      "--bind", "0.0.0.0:8000", \
      "--worker-connections", "1000", \
      "--backlog", "2048", \
      "--timeout", "30", \
      "--graceful-timeout", "10", \
-     "--access-logfile", "-", \
+     "--access-logfile", "/dev/null", \
      "--error-logfile", "-", \
-     "--log-level", "info"]
+     "--log-level", "warning"]

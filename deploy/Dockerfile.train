@@ -1,0 +1,44 @@
+# ==============================================================================
+# Training Dockerfile — Full ML pipeline
+# Includes: dbt, Feast, MLflow, LightGBM, XGBoost, DuckDB, scikit-learn
+# ==============================================================================
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# System deps: git (dbt), gcc (some wheels), libpq-dev (psycopg2)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git gcc g++ curl libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install full Python deps (training + serving)
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy all project code
+COPY app/           ./app/
+COPY training/      ./training/
+COPY feast_repo/    ./feast_repo/
+COPY dbt_project/   ./dbt_project/
+COPY scripts/       ./scripts/
+COPY simulator/     ./simulator/
+COPY sql/           ./sql/
+COPY data_contracts/ ./data_contracts/
+COPY models/        ./models/
+COPY data/          ./data/
+COPY .env           .env
+
+ENV PYTHONPATH=/app \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    # Allow LightGBM to use all allocated CPUs
+    OMP_NUM_THREADS=4 \
+    OPENBLAS_NUM_THREADS=4 \
+    MKL_NUM_THREADS=4 \
+    DBT_PROFILES_DIR=/app/dbt_project
+
+# Default: full training pipeline
+CMD ["sh", "-c", \
+     "python training/build_training_dataset.py && \
+      python training/train_model.py && \
+      python training/evaluate_model.py"]

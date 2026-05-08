@@ -17,9 +17,16 @@
 # ==============================================================================
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Workaround for corporate/VPN SSL interception
+export AWS_DEFAULT_OUTPUT=json
+export PYTHONHTTPSVERIFY=0
+export AWS_NO_VERIFY_SSL=true
+
 # ── Configuration ─────────────────────────────────────────────────────────────
 REGION="${1:-ap-southeast-1}"          # Singapore (close to ID/MY/PH/TH)
-INSTANCE_TYPE="c5.2xlarge"             # 8 vCPU, 16 GB — compute optimized
+INSTANCE_TYPE="${2:-c5.4xlarge}"       # 16 vCPU, 32 GB — override: make deploy-aws INSTANCE_TYPE=t3.xlarge
 KEY_NAME="${AWS_KEY_NAME:-fraud-demo-key}"
 SECURITY_GROUP_NAME="fraud-demo-sg"
 INSTANCE_NAME="fraud-ml-demo"
@@ -40,7 +47,7 @@ echo "╔═══════════════════════�
 echo "║  Fraud ML Demo — AWS Deployment                             ║"
 echo "╠══════════════════════════════════════════════════════════════╣"
 echo "║  Region:    $REGION"
-echo "║  Instance:  $INSTANCE_TYPE (8 vCPU, 16GB)"
+echo "║  Instance:  $INSTANCE_TYPE"
 echo "║  Cost:      ~\$0.34/hr (stop when not demoing!)"
 echo "╚══════════════════════════════════════════════════════════════╝"
 echo ""
@@ -92,16 +99,55 @@ else
 fi
 
 # ── Check/create key pair ─────────────────────────────────────────────────────
+KEY_FILE="$SCRIPT_DIR/${KEY_NAME}.pem"
 if ! aws ec2 describe-key-pairs --region "$REGION" --key-names "$KEY_NAME" &>/dev/null; then
     echo "→ Creating SSH key pair: $KEY_NAME"
     aws ec2 create-key-pair --region "$REGION" \
         --key-name "$KEY_NAME" \
-        --query "KeyMaterial" --output text > "${KEY_NAME}.pem"
-    chmod 400 "${KEY_NAME}.pem"
-    echo "  Saved: ${KEY_NAME}.pem (keep this safe!)"
+        --query "KeyMaterial" --output text > "$KEY_FILE"
+    chmod 400 "$KEY_FILE"
+    echo "  Saved: $KEY_FILE (keep this safe!)"
 else
-    echo "→ Key pair '$KEY_NAME' already exists"
+    echo "→ Key pair '$KEY_NAME' already exists in $REGION"
+    if [ ! -f "$KEY_FILE" ]; then
+        echo "  WARNING: $KEY_FILE not found locally — you may need to re-create the key pair"
+        echo "  Run: aws ec2 delete-key-pair --region $REGION --key-name $KEY_NAME"
+        echo "  Then re-run make deploy-aws to generate a new .pem file"
+    fi
 fi
+
+# ── IAM instance profile (SSM + S3 access, idempotent) ───────────────────────
+ROLE_NAME="fraud-demo-ec2-role"
+PROFILE_NAME="fraud-demo-ec2-profile"
+ACCOUNT_ID=$(aws --no-cli-pager sts get-caller-identity --query Account --output text)
+
+echo "→ Ensuring IAM instance profile ($PROFILE_NAME)..."
+if ! aws --no-cli-pager iam get-role --role-name "$ROLE_NAME" &>/dev/null; then
+    TRUST_FILE=$(mktemp /tmp/trust-XXXX.json)
+    cat > "$TRUST_FILE" << 'EOF'
+{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]}
+EOF
+    aws --no-cli-pager iam create-role --role-name "$ROLE_NAME" \
+        --assume-role-policy-document "file://$TRUST_FILE" \
+        --description "EC2 role for Fraud ML Demo (SSM + S3)" > /dev/null
+    rm -f "$TRUST_FILE"
+fi
+aws --no-cli-pager iam attach-role-policy --role-name "$ROLE_NAME" \
+    --policy-arn "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore" 2>/dev/null || true
+S3_POL=$(mktemp /tmp/s3pol-XXXX.json)
+printf '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["s3:GetObject","s3:ListBucket"],"Resource":["arn:aws:s3:::fraud-demo-deploy-%s","arn:aws:s3:::fraud-demo-deploy-%s/*"]}]}' \
+    "$ACCOUNT_ID" "$ACCOUNT_ID" > "$S3_POL"
+aws --no-cli-pager iam put-role-policy --role-name "$ROLE_NAME" \
+    --policy-name "fraud-demo-s3" --policy-document "file://$S3_POL" > /dev/null
+rm -f "$S3_POL"
+if ! aws --no-cli-pager iam get-instance-profile --instance-profile-name "$PROFILE_NAME" &>/dev/null; then
+    aws --no-cli-pager iam create-instance-profile --instance-profile-name "$PROFILE_NAME" > /dev/null
+    aws --no-cli-pager iam add-role-to-instance-profile \
+        --instance-profile-name "$PROFILE_NAME" --role-name "$ROLE_NAME" > /dev/null
+    echo "  Created — waiting 10s for IAM propagation..."
+    sleep 10
+fi
+echo "  Ready: $PROFILE_NAME"
 
 # ── User data script (runs on first boot) ────────────────────────────────────
 USER_DATA=$(cat <<'CLOUD_INIT'
@@ -109,7 +155,14 @@ USER_DATA=$(cat <<'CLOUD_INIT'
 set -ex
 
 # System updates
-apt-get update && apt-get install -y docker.io docker-compose-plugin git
+apt-get update && apt-get install -y ca-certificates curl gnupg cpulimit unzip make
+
+# Install Docker from official repo (includes compose plugin)
+install -m 0755 -d /etc/apt/keyrings
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --batch --dearmor -o /etc/apt/keyrings/docker.gpg
+chmod a+r /etc/apt/keyrings/docker.gpg
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo $VERSION_CODENAME) stable" > /etc/apt/sources.list.d/docker.list
+apt-get update && apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
 
 # Start Docker
 systemctl enable docker && systemctl start docker
@@ -129,6 +182,7 @@ INSTANCE_ID=$(aws ec2 run-instances --region "$REGION" \
     --instance-type "$INSTANCE_TYPE" \
     --key-name "$KEY_NAME" \
     --security-group-ids "$SG_ID" \
+    --iam-instance-profile "Name=$PROFILE_NAME" \
     --user-data "$USER_DATA" \
     --block-device-mappings '[{"DeviceName":"/dev/sda1","Ebs":{"VolumeSize":30,"VolumeType":"gp3"}}]' \
     --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=$INSTANCE_NAME}]" \

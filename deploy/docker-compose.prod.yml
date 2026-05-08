@@ -100,11 +100,133 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "4.0"
+          cpus: "12.0"
+          memory: 8G
+        reservations:
+          cpus: "8.0"
           memory: 4G
+    restart: unless-stopped
+
+  # --------------------------------------------------------------------------
+  # Training Pipeline — isolated from API (profiles: training)
+  # Start manually: docker compose -f deploy/docker-compose.prod.yml
+  #                   --profile training run --rm training
+  # Or via: make train-docker [CONFIG=...] [SAMPLE=0.3]
+  #
+  # CPU/RAM limits ensure training never starves the serving plane.
+  # --------------------------------------------------------------------------
+  training:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.train
+    container_name: fraud_training
+    profiles:
+      - training                    # NOT started by default with `up -d`
+    environment:
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=${POSTGRES_USER:-fraud_user}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-fraud_pass}
+      - POSTGRES_DB=${POSTGRES_DB:-fraud_db}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_DB=0
+      - FEAST_REPO_PATH=feast_repo/feature_repo
+      - MLFLOW_TRACKING_URI=${MLFLOW_TRACKING_URI:-sqlite:///mlflow.db}
+      - CONFIG=${CONFIG:-training/experiments/lgbm_v1.yaml}
+      - SAMPLE=${SAMPLE:-}
+    volumes:
+      # Persist trained model artifacts + MLflow DB back to host
+      - ../models:/app/models
+      - ../mlruns:/app/mlruns
+      - ../mlflow.db:/app/mlflow.db
+      - ../data/duckdb:/app/data/duckdb
+      - ../training/datasets:/app/training/datasets
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "4.0"          # Training capped at 4 cores
+          memory: 6G           # Enough for 50K-row LightGBM
         reservations:
           cpus: "2.0"
           memory: 2G
+    # No restart — training is a one-shot job
+
+  # --------------------------------------------------------------------------
+  # Transaction Stream Simulator — writes real-time events to Redis
+  # Start manually: docker compose -f deploy/docker-compose.prod.yml
+  #                   --profile simulator up -d simulator
+  # Or via: make stream-docker [EPS=10]
+  #
+  # Lightweight (~1% CPU). Populates Redis sorted sets so online features
+  # are non-zero during the demo load test.
+  # --------------------------------------------------------------------------
+  simulator:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.train   # reuses full image (has app/ + simulator/)
+    container_name: fraud_simulator
+    profiles:
+      - simulator                   # NOT started by default with `up -d`
+    command: >
+      python simulator/stream_transactions.py
+        --eps ${SIM_EVENTS_PER_SECOND:-10}
+        --fraud-rate ${SIM_FRAUD_RATE:-0.03}
+        --use-db
+    environment:
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=${POSTGRES_USER:-fraud_user}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-fraud_pass}
+      - POSTGRES_DB=${POSTGRES_DB:-fraud_db}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_DB=0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+    restart: unless-stopped   # keep streaming until manually stopped
+
+  # --------------------------------------------------------------------------
+  # Locust Load Tester — runs ON the EC2 instance for true latency measurement
+  # Start: docker compose -f deploy/docker-compose.prod.yml --profile loadtest up -d locust
+  # UI tunnelled via: make ssm-tunnel-locust → http://localhost:8089
+  # --------------------------------------------------------------------------
+  locust:
+    image: locustio/locust:2.39.1
+    container_name: fraud_locust
+    profiles:
+      - loadtest                   # NOT started by default with `up -d`
+    ports:
+      - "8089:8089"
+    environment:
+      - LOCUST_SERVER_TIME=1       # Report server-side latency (X-Process-Time-Ms)
+    volumes:
+      - ../locustfile.py:/mnt/locust/locustfile.py:ro
+    command: >
+      -f /mnt/locust/locustfile.py
+      --host http://api:8000
+      --web-host 0.0.0.0
+    depends_on:
+      api:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 512M
     restart: unless-stopped
 
 volumes:
