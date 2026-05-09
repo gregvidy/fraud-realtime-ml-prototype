@@ -3,7 +3,7 @@
 **Version:** 1.0  
 **Date:** April 24, 2026  
 **Status:** Draft — For Internal Review  
-**Author:** GBG Analytics Team  
+**Author:** Gregorius Vidy Prasetyo
 **Classification:** Private / Confidential  
 
 ---
