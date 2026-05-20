@@ -38,7 +38,7 @@ def _get_redis() -> aioredis.Redis:
             port=int(os.getenv("REDIS_PORT", 6379)),
             db=int(os.getenv("REDIS_DB", 0)),
             decode_responses=True,
-            max_connections=50,
+            max_connections=100,
         )
         _redis_client = aioredis.Redis(connection_pool=_redis_pool)
     return _redis_client

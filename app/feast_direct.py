@@ -70,7 +70,7 @@ def _get_raw_redis() -> aioredis.Redis:
             host=os.getenv("REDIS_HOST", "localhost"),
             port=int(os.getenv("REDIS_PORT", 6379)),
             db=int(os.getenv("REDIS_DB", 0)),
-            max_connections=50,
+            max_connections=100,
             decode_responses=False,   # binary — do NOT change
         )
         _raw_redis_client = aioredis.Redis(connection_pool=_raw_redis_pool)

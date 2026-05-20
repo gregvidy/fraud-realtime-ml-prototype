@@ -37,8 +37,10 @@ from .score_logger import log_score
 logger = logging.getLogger(__name__)
 
 # Thread pool for CPU-bound work (predict + vector assembly + np.array).
-# Sized per-worker: 16 threads avoids thread pool queueing at high RPS.
-_predict_pool = ThreadPoolExecutor(max_workers=16, thread_name_prefix="predict")
+# With Gunicorn forking 4 workers, each worker gets its own pool.
+# 4 threads × 4 workers = 16 OS threads — matches available CPU cores
+# without over-subscription.
+_predict_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="predict")
 
 _RISK_BANDS = [
     (0.80, "critical"),
