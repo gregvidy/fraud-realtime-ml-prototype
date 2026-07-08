@@ -39,3 +39,8 @@ htmlcov/
 *.zip
 *.tar.gz
 *.pem
+*.avsc
+*.env.example
+*.db
+*.parquet
+*.pkl

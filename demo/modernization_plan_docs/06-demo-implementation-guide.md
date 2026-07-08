@@ -10,11 +10,11 @@
 Each phase builds on the previous one. The demo is **cumulative** — by the final demo (D5), the full platform is running end-to-end.
 
 ```
-D1 (Phase 1): "It scales"          — 2K TPS, ClickHouse, Grafana
-D2 (Phase 2): "It streams"         — CDC → Kafka → ksqlDB → Redis + ScyllaDB
-D3 (Phase 3): "It learns at scale" — 100M training, feature registry, multi-model
-D4 (Phase 4): "It self-manages"    — Canary, champion/challenger, drift alerts
-D5 (Phase 5): "It's production"    — SLA validated, security, CI/CD, resilience
+D1 (Phase 1): "It scales & streams"  — 2K TPS, ClickHouse (RBAC), Redpanda + 3 Python consumers, Grafana
+D2 (Phase 2): "It integrates"        — Transactional outbox, ClickHouse Kafka Engine + MVs, Redis Cluster
+D3 (Phase 3): "It learns at scale"   — 100M training, feature registry, multi-model
+D4 (Phase 4): "It self-manages"      — Canary, champion/challenger, drift alerts
+D5 (Phase 5): "It's production"      — SLA validated, security, CI/CD, resilience
 ```
 
 ---
@@ -29,17 +29,17 @@ fraud-realtime-ml-prototype/
 │   ├── locust.Dockerfile
 │   └── ray-worker.Dockerfile
 │
-├── docker-compose.yml              # Phase 1: core services
-├── docker-compose.streaming.yml    # Phase 2: Kafka + ksqlDB + ScyllaDB
+├── docker-compose.yml              # Phase 1: core services (incl. Redpanda + Console + Schema Registry)
+├── docker-compose.streaming.yml    # Phase 2 additions: outbox-relay service (+ optional Debezium Connect for legacy sources)
 ├── docker-compose.full.yml         # Phase 3+: full stack
-├── docker-compose.prod.yml         # Phase 5: production-ready
+├── docker-compose.prod.yml         # Phase 5: production-ready (Redis Cluster 3P+3R, Redpanda 3-node)
 │
 ├── serving/                         # Scoring service
 │   ├── app.py                       # FastAPI application
 │   ├── scoring.py                   # Score endpoint
-│   ├── feature_service.py           # Dual-store feature fetch (Redis + ScyllaDB)
-│   ├── feast_direct.py              # Direct Redis Feast reader
-│   ├── online_features.py           # Sorted set / ksqlDB feature reader
+│   ├── feature_service.py           # Redis Cluster hot path + ClickHouse cold-fallback (circuit breaker)
+│   ├── feast_direct.py              # Direct Redis Feast reader (Cluster-aware)
+│   ├── online_features.py           # Redis sorted-set velocity feature reader
 │   ├── model_registry.py            # In-memory model registry with hot-reload
 │   ├── calibration.py               # Isotonic calibration (extracted numpy)
 │   ├── canary.py                    # Canary routing logic (Phase 4)
@@ -72,7 +72,7 @@ fraud-realtime-ml-prototype/
 ├── features/                        # Feature registry Python module
 │   ├── __init__.py
 │   ├── registry.py                  # Load YAML, serve feature metadata
-│   ├── validator.py                 # Validate against dbt models + ksqlDB
+│   ├── validator.py                 # Validate against dbt models + ClickHouse MVs + Avro schemas
 │   └── cli.py                       # CLI: fraudml features list/validate/describe
 │
 ├── monitoring/                      # Monitoring service (Phase 4)
@@ -86,16 +86,26 @@ fraud-realtime-ml-prototype/
 │   ├── lifecycle_service.py         # Promote, rollback, canary evaluation
 │   └── api.py                       # REST endpoints for model management
 │
-├── streaming/                       # Streaming pipeline configs (Phase 2)
-│   ├── debezium/
-│   │   ├── source-db-connector.json
-│   │   └── README.md
-│   ├── ksqldb/
-│   │   ├── create_streams.sql
-│   │   ├── velocity_aggregates.sql
-│   │   └── sink_connectors.sql
-│   └── kafka/
-│       └── topics.sh
+├── streaming/                       # Redpanda streaming (Phase 1: producer + 3 consumers; Phase 2: outbox-relay + optional Debezium fallback)
+│   ├── config.py                    # broker addr, topic map, group names, avro paths
+│   ├── schemas/                     # Avro schemas registered in Redpanda Schema Registry
+│   │   ├── TxnEvent.avsc
+│   │   ├── ScoredTxnEvent.avsc
+│   │   └── LoginEvent.avsc
+│   ├── schema_registry.py           # register + fetch schemas by subject
+│   ├── producer.py                  # confluent_kafka.Producer + AvroSerializer
+│   ├── consumers/
+│   │   ├── base.py                  # aiokafka async loop, manual commit, DLQ
+│   │   ├── fraud_decisioning.py     # → HTTP POST /score → publish txn.scored
+│   │   ├── feature_store_updater.py # → Redis Cluster sorted sets
+│   │   └── postgres_sink.py         # → Postgres COPY batched insert
+│   ├── outbox_relay.py              # Phase 2 — polls outbox_events, publishes to Redpanda
+│   ├── run.py                       # python -m streaming.run <consumer_name>
+│   ├── rpk/
+│   │   └── topics.sh                # rpk topic create bootstrap
+│   └── debezium/                    # Phase 2 fallback — used only when source can't be modified
+│       ├── source-db-connector.json
+│       └── README.md
 │
 ├── dbt_features/                    # dbt project (Phase 1 → ClickHouse)
 │   ├── dbt_project.yml
@@ -112,12 +122,16 @@ fraud-realtime-ml-prototype/
 │   │   ├── dashboards/
 │   │   │   ├── scoring-performance.json
 │   │   │   ├── ml-monitoring.json
-│   │   │   ├── streaming-pipeline.json
+│   │   │   ├── streaming-pipeline.json    # topic lag, consumer group progress, MV ingest rate
 │   │   │   └── sla-compliance.json
 │   │   └── provisioning/
 │   ├── logstash/pipeline/
-│   ├── clickhouse/init.sql
-│   └── scylladb/init.cql
+│   ├── clickhouse/
+│   │   ├── init.sql                       # Schemas raw/main/sandbox + MergeTree tables
+│   │   ├── users.d/roles.xml              # 4 RBAC roles (analyst, bi_dashboard, data_scientist, service_writer)
+│   │   └── streaming.sql                  # Kafka Engine tables + Materialized Views (Phase 2)
+│   └── redpanda/
+│       └── console.yaml                   # Redpanda Console + Schema Registry config
 │
 ├── helm/fraudml/                    # Kubernetes Helm chart (Phase 5)
 │   ├── Chart.yaml
@@ -134,8 +148,10 @@ fraud-realtime-ml-prototype/
 │   ├── integration/
 │   │   ├── test_score_e2e.py
 │   │   ├── test_training_e2e.py
-│   │   ├── test_cdc_pipeline.py
-│   │   └── test_dual_store.py
+│   │   ├── test_streaming.py                # Redpanda producer + 3 consumers e2e + replay
+│   │   ├── test_outbox_relay.py             # Outbox → Redpanda, HA duplicate check (Phase 2)
+│   │   ├── test_clickhouse_kafka_engine.py  # Kafka Engine + MVs ingesting (Phase 2)
+│   │   └── test_cold_fallback.py            # Redis down → ClickHouse fallback path (Phase 2)
 │   └── load/
 │       ├── locustfile.py
 │       └── scenarios/
@@ -206,22 +222,47 @@ materialize:                           ## Materialize features to Redis via Feas
 
 offline-pipeline: export-to-clickhouse dbt-run materialize  ## Full offline pipeline
 
-# --- Phase 2: Streaming ---
-.PHONY: streaming-up cdc-deploy ksqldb-deploy streaming-pipeline
+# --- Phase 1: Streaming (Redpanda) ---
+.PHONY: stream-topics stream-schemas stream-producer stream-consumer stream-replay stream-status
 
-streaming-up:                          ## Start streaming infrastructure
-	docker compose -f docker-compose.streaming.yml up -d kafka zookeeper schema-registry ksqldb connect scylladb
+stream-topics:                         ## Create per-channel Redpanda topics
+	bash streaming/rpk/topics.sh
 
-cdc-deploy:                            ## Deploy Debezium CDC connector
+stream-schemas:                        ## Register Avro schemas with Schema Registry
+	python -m streaming.schema_registry register
+
+stream-producer:                       ## Start multi-channel producer (EPS + channel mix)
+	python simulator/stream_transactions.py \
+		--eps $(or $(EPS),200) \
+		--channel-mix $(or $(MIX),visa=0.35,mastercard=0.25,qris=0.20,debit=0.10,amex=0.05,digital=0.05)
+
+stream-consumer:                       ## Start a named consumer (NAME=fraud_decisioning|feature_store_updater|postgres_sink)
+	python -m streaming.run $(NAME)
+
+stream-replay:                         ## Reset a consumer group to a point in time (CONSUMER=<group> FROM=1h)
+	rpk group seek $(CONSUMER) --to-datetime $$(date -u -d "$(FROM) ago" +%Y-%m-%dT%H:%M:%S)
+
+stream-status:                         ## Show topic + consumer group status
+	rpk topic list
+	rpk group list
+
+# --- Phase 2: Production Integration ---
+.PHONY: outbox-relay clickhouse-streaming redis-cluster-up debezium-fallback
+
+outbox-relay:                          ## Start the transactional outbox relay (2 replicas for HA)
+	docker compose -f docker-compose.streaming.yml up -d outbox-relay
+
+clickhouse-streaming:                  ## Apply ClickHouse Kafka Engine + Materialized Views
+	docker exec -i fraud_clickhouse clickhouse-client --multiquery < infra/clickhouse/streaming.sql
+
+redis-cluster-up:                      ## Upgrade Redis to 3-primary + 3-replica Cluster
+	docker compose -f docker-compose.prod.yml up -d redis-node-1 redis-node-2 redis-node-3 redis-node-4 redis-node-5 redis-node-6
+	docker exec redis-node-1 redis-cli --cluster create <node1..6-ips>:6379 --cluster-replicas 1 --cluster-yes
+
+debezium-fallback:                     ## (Legacy sources only) Deploy Debezium CDC connector
 	curl -X POST http://localhost:8083/connectors \
 		-H "Content-Type: application/json" \
 		-d @streaming/debezium/source-db-connector.json
-
-ksqldb-deploy:                         ## Deploy ksqlDB queries
-	cat streaming/ksqldb/create_streams.sql | docker exec -i ksqldb ksql http://localhost:8088
-	cat streaming/ksqldb/velocity_aggregates.sql | docker exec -i ksqldb ksql http://localhost:8088
-
-streaming-pipeline: streaming-up cdc-deploy ksqldb-deploy  ## Full streaming pipeline
 
 # --- Phase 3: Training ---
 .PHONY: train train-sweep train-distributed features-validate
@@ -284,7 +325,7 @@ security-scan:                         ## Security scanning
 
 demo-d1: infra-up seed-data offline-pipeline start-api load-test  ## Demo 1: Foundation
 
-demo-d2: streaming-pipeline                                        ## Demo 2: Streaming (after D1)
+demo-d2: outbox-relay clickhouse-streaming                         ## Demo 2: Production Integration (after D1)
 
 demo-d3: features-validate train-sweep                             ## Demo 3: Training (after D2)
 
@@ -386,21 +427,34 @@ def generate_large_dataset(target_rows=100_000_000, chunk_size=1_000_000):
 | 10 | Grafana dashboards | `infra/grafana/dashboards/*.json` | 4 dashboards visible |
 | 11 | ELK logging | `infra/logstash/pipeline/`, structured JSON logs | Logs searchable in Kibana |
 | 12 | Locust load test | `tests/load/locustfile.py` | 2K TPS sustained |
+| 13 | ClickHouse 4-role RBAC | `infra/clickhouse/users.d/roles.xml` | `analyst`/`bi_dashboard`/`data_scientist`/`service_writer` grants enforced |
+| 14 | Redpanda + Console + Schema Registry | `docker-compose.yml` (redpanda, redpanda-console services) | 6 topics visible in Console; Schema Registry serves 3 subjects |
+| 15 | Avro schemas registered | `streaming/schemas/*.avsc`, `streaming/schema_registry.py` | `curl http://localhost:8081/subjects` returns 3 subjects |
+| 16 | Multi-channel producer | `simulator/stream_transactions.py`, `streaming/producer.py` | 200 eps distributed across 6 channels per `--channel-mix` |
+| 17 | 3 consumer groups | `streaming/consumers/*.py`, `streaming/run.py` | `rpk group list` shows 3 groups, all with lag < 500ms |
+| 18 | Fraud-decisioning HTTP scoring | `streaming/consumers/fraud_decisioning.py` | Every `txn.raw.*` produces a `txn.scored` within 100ms P50 |
+| 19 | Replay works | `make stream-replay CONSUMER=<group> FROM=1h` | Consumer catches up on 1h of events; other consumers unaffected |
+| 20 | DuckDB fully removed | (repo scan) | `rg -l duckdb --type py` returns 0; `dbt-duckdb` not in `requirements.txt` |
 
 ### Phase 2 Build Checklist
 
 | # | Task | Files to Create/Modify | Test |
 |---|------|----------------------|------|
-| 1 | Kafka + Zookeeper + Schema Registry | `docker-compose.streaming.yml` | Kafka topics created |
-| 2 | Debezium connector config | `streaming/debezium/source-db-connector.json` | CDC events in Kafka |
-| 3 | ksqlDB stream definitions | `streaming/ksqldb/create_streams.sql` | Streams visible in ksqlDB |
-| 4 | ksqlDB velocity aggregates | `streaming/ksqldb/velocity_aggregates.sql` | Window aggregates computed |
-| 5 | Redis sink connector | `streaming/ksqldb/sink_connectors.sql` | Velocity features in Redis |
-| 6 | ScyllaDB schema | `infra/scylladb/init.cql` | Tables created |
-| 7 | ScyllaDB sink connector | Kafka Connect config | Features in ScyllaDB |
-| 8 | Dual-store feature service | `serving/feature_service.py` | Redis hit → fast; Redis miss → ScyllaDB fallback |
-| 9 | ScyllaDB batch load | `scripts/materialize_to_scylladb.py` | Batch features in ScyllaDB |
-| 10 | Integration test: CDC e2e | `tests/integration/test_cdc_pipeline.py` | INSERT → Kafka → Redis in < 5s |
+| 1 | Outbox schema in Predator DB | Migration in `sql/migrations/` | `outbox_events` table with unpublished index exists |
+| 2 | Application-level dual-write | Predator services (or simulated stub for demo) | INSERT into `transactions` + `outbox_events` in one txn |
+| 3 | `outbox-relay` service | `streaming/outbox_relay.py`, `docker-compose.streaming.yml` | Event lands in Redpanda within 2s of DB commit |
+| 4 | Relay HA — no duplicates | 2 replicas via `docker compose scale outbox-relay=2` | `SELECT COUNT(*), COUNT(DISTINCT id) FROM main.transactions` returns equal counts on 1M-event test |
+| 5 | Redpanda 3-node HA upgrade | `docker-compose.prod.yml` (redpanda-1, -2, -3 with `--seeds`) | `rpk cluster health` reports 3 healthy nodes |
+| 6 | Debezium fallback path (optional) | `streaming/debezium/source-db-connector.json` + `RegexRouter` SMT | With outbox off, CDC events land in `txn.raw.<channel>` topics |
+| 7 | ClickHouse Kafka Engine + landing MVs | `infra/clickhouse/streaming.sql` (`raw.txn_kafka`, `main.mv_transactions_ingest`) | Publish N events → `SELECT count() FROM main.transactions` = N within 2s |
+| 8 | ClickHouse velocity MVs | `infra/clickhouse/streaming.sql` (`main.mv_user_velocity_5m/10m/1h/24h`, device variants) | Aggregates match Redis sorted-set counts within 1% |
+| 9 | `main.mv_latest_features` MV | `infra/clickhouse/streaming.sql` (ReplacingMergeTree) | Every scored entity has a row |
+| 10 | Redis Cluster (3P+3R, AOF) | `docker-compose.prod.yml` | Kill primary → replica promotes; no data loss beyond 1s |
+| 11 | Cold-fallback circuit breaker | `serving/feature_service.py` | Stop Redis → scoring continues via ClickHouse (P50 ~50ms) |
+| 12 | `analytics-sink` consumer **removed** | Delete `streaming/consumers/analytics_sink.py` if it existed in Phase 1 | Not present; ClickHouse Kafka Engine covers this role |
+| 13 | Integration test: outbox e2e | `tests/integration/test_outbox_relay.py` | DB commit → Redpanda in < 2s; no duplicates under HA |
+| 14 | Integration test: Kafka Engine | `tests/integration/test_clickhouse_kafka_engine.py` | Events ingested + aggregates correct |
+| 15 | Integration test: cold fallback | `tests/integration/test_cold_fallback.py` | Redis down → scoring stays live via CH |
 
 ### Phase 3 Build Checklist
 

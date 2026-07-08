@@ -49,6 +49,104 @@ services:
           cpus: "0.5"
           memory: 256M
 
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8
+    container_name: fraud_clickhouse
+    ports:
+      - "8123:8123"    # HTTP
+      - "9000:9000"    # Native TCP
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      - clickhouse_logs:/var/log/clickhouse-server
+      - ./infra/clickhouse/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+      - ./infra/clickhouse/02-init-rbac.sh:/docker-entrypoint-initdb.d/02-init-rbac.sh:ro
+    environment:
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_ADMIN_PASSWORD:-admin_pass}
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+      CLICKHOUSE_ANALYST_PASSWORD: ${CLICKHOUSE_ANALYST_PASSWORD:-analyst_pass}
+      CLICKHOUSE_BI_PASSWORD: ${CLICKHOUSE_BI_PASSWORD:-bi_pass}
+      CLICKHOUSE_DS_PASSWORD: ${CLICKHOUSE_DS_PASSWORD:-ds_pass}
+      CLICKHOUSE_SW_PASSWORD: ${CLICKHOUSE_SW_PASSWORD:-sw_pass}
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8123/ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    deploy:
+      resources:
+        limits:
+          cpus: "4.0"
+          memory: 16G
+        reservations:
+          cpus: "2.0"
+          memory: 8G
+
+  # ── Redpanda (Kafka-API broker + built-in Schema Registry) ──────────────
+  # Single-node KRaft mode for POC. Production uses 3-node cluster (see
+  # deploy/docker-compose.prod.yml). `--advertise-kafka-addr` publishes two
+  # listeners so both the host (localhost:9092) and other containers
+  # (redpanda:29092) can connect with the same broker.
+  redpanda:
+    image: redpandadata/redpanda:v24.2.7
+    container_name: fraud_redpanda
+    command:
+      - redpanda
+      - start
+      - --smp=1
+      - --overprovisioned
+      - --node-id=0
+      - --check=false
+      - --kafka-addr=INTERNAL://0.0.0.0:29092,EXTERNAL://0.0.0.0:9092
+      - --advertise-kafka-addr=INTERNAL://redpanda:29092,EXTERNAL://localhost:9092
+      - --pandaproxy-addr=0.0.0.0:8082
+      - --advertise-pandaproxy-addr=localhost:8082
+      - --schema-registry-addr=0.0.0.0:8081
+      - --rpc-addr=0.0.0.0:33145
+      - --advertise-rpc-addr=redpanda:33145
+      - --mode=dev-container
+    ports:
+      - "9092:9092"     # Kafka API (host-facing)
+      - "8081:8081"     # Schema Registry
+      - "8082:8082"     # Pandaproxy (HTTP → Kafka)
+      - "9644:9644"     # Admin API
+    volumes:
+      - redpanda_data:/var/lib/redpanda/data
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health 2>&1 | grep -q 'Healthy:.*true'"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+        reservations:
+          cpus: "1.0"
+          memory: 1G
+
+  # ── Redpanda Console (web UI at :8080) ──────────────────────────────────
+  # Lets analysts + product see topics, messages (Avro-decoded), consumer
+  # lag, and registered schemas. Big demo win — no CLI needed.
+  redpanda-console:
+    image: redpandadata/console:v2.7.2
+    container_name: fraud_redpanda_console
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_BROKERS: redpanda:29092
+      KAFKA_SCHEMAREGISTRY_ENABLED: "true"
+      KAFKA_SCHEMAREGISTRY_URLS: http://redpanda:8081
+    depends_on:
+      redpanda:
+        condition: service_healthy
+
   api:
     build:
       context: .
@@ -84,3 +182,6 @@ services:
 volumes:
   postgres_data:
   redis_data:
+  clickhouse_data:
+  clickhouse_logs:
+  redpanda_data:

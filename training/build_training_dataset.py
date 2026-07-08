@@ -3,46 +3,61 @@ build_training_dataset.py
 --------------------------
 Builds a labelled training dataset for fraud detection.
 
-Reads directly from the dbt-produced fct_training_dataset table in DuckDB,
-which already joins all offline features, online (cold-start) features,
-request-time columns, and fraud labels at the transaction grain with
-point-in-time correctness.
+Reads directly from the dbt-produced main.fct_training_dataset table in
+ClickHouse, which already joins all offline features, online (cold-start)
+features, request-time columns, and fraud labels at the transaction grain
+with point-in-time correctness.
 
 Output: training/datasets/training_dataset.parquet
 
 Usage:
     python training/build_training_dataset.py
     python training/build_training_dataset.py --sample-frac 0.5
-    python training/build_training_dataset.py --db-path path/to/fraud_offline.duckdb
 """
 
+from __future__ import annotations
+
 import argparse
+import os
 from pathlib import Path
 
-import duckdb
+import clickhouse_connect
+from dotenv import load_dotenv
 
-_ROOT = Path(__file__).parents[1]
-DEFAULT_DB_PATH = _ROOT / "data" / "duckdb" / "fraud_offline.duckdb"
+load_dotenv()
 
 OUTPUT_DIR = Path(__file__).parent / "datasets"
 OUTPUT_PATH = OUTPUT_DIR / "training_dataset.parquet"
 
 
-def main(sample_frac: float, db_path: Path) -> None:
+def get_ch_client():
+    return clickhouse_connect.get_client(
+        host=os.getenv("CLICKHOUSE_HOST", "localhost"),
+        port=int(os.getenv("CLICKHOUSE_PORT", "8123")),
+        username="default",
+        password=os.getenv("CLICKHOUSE_ADMIN_PASSWORD", "admin_pass"),
+    )
+
+
+def main(sample_frac: float) -> None:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    print("Reading fct_training_dataset from DuckDB...")
-    conn = duckdb.connect(str(db_path), read_only=True)
+    print("Reading main.fct_training_dataset from ClickHouse...")
+    ch = get_ch_client()
 
-    # Optional sampling via TABLESAMPLE for large datasets
-    sample_clause = ""
+    # Deterministic hash-based sampling. CH's SAMPLE clause requires a
+    # SAMPLE BY key in the MergeTree engine (we don't set one), so we use
+    # cityHash64(transaction_id) < cutoff instead. Same sample_frac + same
+    # transaction_id → same inclusion decision, so re-runs are reproducible.
     if sample_frac < 1.0:
-        pct = sample_frac * 100
-        sample_clause = f"USING SAMPLE {pct:.1f} PERCENT (bernoulli, 42)"
+        cutoff = int(sample_frac * (2**64 - 1))
+        where_clause = f"WHERE cityHash64(transaction_id) < {cutoff}"
+    else:
+        where_clause = ""
 
-    query = f"SELECT * FROM main.fct_training_dataset {sample_clause}"
-    df = conn.execute(query).df()
-    conn.close()
+    query = f"SELECT * FROM main.fct_training_dataset {where_clause}"
+    df = ch.query_df(query)
+    ch.close()
 
     total = len(df)
     fraud_count = int(df["is_fraud"].sum())
@@ -53,10 +68,12 @@ def main(sample_frac: float, db_path: Path) -> None:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Build fraud detection training dataset")
-    parser.add_argument("--sample-frac", type=float, default=1.0,
-                        help="Fraction of rows to sample (default: 1.0 = all)")
-    parser.add_argument("--db-path", type=Path, default=DEFAULT_DB_PATH,
-                        help=f"DuckDB path (default: {DEFAULT_DB_PATH})")
+    parser = argparse.ArgumentParser(description="Build fraud detection training dataset from ClickHouse")
+    parser.add_argument(
+        "--sample-frac",
+        type=float,
+        default=1.0,
+        help="Fraction of rows to sample deterministically via cityHash64(transaction_id) (default: 1.0 = all)",
+    )
     args = parser.parse_args()
-    main(args.sample_frac, args.db_path)
+    main(args.sample_frac)

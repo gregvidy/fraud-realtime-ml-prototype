@@ -43,7 +43,7 @@ Tier 3 — Monitoring & Explainability:
   ├── Component 6:    Angular monitoring page
   ├── Component 7:    PSI threshold alerts
   ├── Component 8:    Permutation importance (training artifact + monitoring signal)
-  └── Component 9:    Explainability (PDP global + SHAP local + LIME fallback)
+  └── Component 9:    Explainability (PDP global + SHAP local — TreeExplainer / DeepExplainer / KernelExplainer)
        → Deliverable: Monitoring dashboard, feature importance, prediction explanations
 
 Testing & UAT: Regression, client validation, deployment
@@ -152,14 +152,14 @@ MONTH 5 — October 2026: Tier 3b (Explainability)
 │     • Engineer A: Angular explainability page — feature importance bar charts, PDP plots
 │     • Engineer B: ExplainabilityLog table + REST endpoints + async job infrastructure
 │
-├── Week 19-20: SHAP On-Demand + LIME Fallback
-│     • Lead: On-demand SHAP endpoint (async with polling) + LIME for custom models
+├── Week 19-20: SHAP On-Demand + KernelSHAP/DeepSHAP Fallback
+│     • Lead: On-demand SHAP endpoint (async with polling) + DeepExplainer for NNs + KernelExplainer for custom models
 │     • Engineer A: Angular — single-prediction explanation view (waterfall chart)
 │     • Engineer B: Integration testing, API docs, error handling
 │
 └── Week 20 end: ✅ TESTING GATE — Explainability validation
       Criteria: Permutation importance stored at training, SHAP returns in <5s,
-      PDP renders correctly, LIME fallback works for non-tree models
+      PDP renders correctly, DeepSHAP/KernelSHAP works for non-tree models
 
 MONTH 6 — November–December 2026: Hardening + UAT
 ├── Week 21-22: Integration Testing
@@ -191,7 +191,7 @@ MONTH 6 — November–December 2026: Hardening + UAT
 | Tier 2a — Scoring path | Month 2 (4 weeks) | Lead: ONNX export; Eng A: C# scoring; Eng B: calibration/DataHub | Lead teaches ONNX concept in Week 5 |
 | Tier 2b — Capabilities | Month 3 (4 weeks) | Lead: ML logic (chunked, XGB, backtest); Engineers: UI + API | Engineers now comfortable with the codebase |
 | Tier 3a — Monitoring | Month 4 (4 weeks) | Lead: PSI logic; Engineers: DB + API + Angular | Lead teaches PSI/drift concepts |
-| Tier 3b — Explainability | Month 5 (4 weeks) | Lead: SHAP/PDP/LIME; Engineers: UI + API | Most ML-heavy phase for lead |
+| Tier 3b — Explainability | Month 5 (4 weeks) | Lead: SHAP/PDP; Engineers: UI + API | Most ML-heavy phase for lead |
 | Hardening + UAT | Month 6 (4 weeks) | All 3 | Testing, packaging, stakeholder feedback |
 
 **Why this works in 6 months**:
@@ -291,5 +291,4 @@ ALTER TABLE TrainingModelRun
 | `xgboost` | Tier 2 (#12) | New algorithm, pip install (Windows wheels) |
 | `Hangfire` | Tier 3 | NuGet — batch jobs for monitoring + explainability |
 | `PrimeNG (p-chart)` | Tier 3 (#6) | Angular 7 compatible charting (Chart.js wrapper) |
-| `shap` | Tier 3 (#9) | SHAP TreeExplainer for local explanations |
-| `lime` | Tier 3 (#9) | Fallback explainer for custom/NN models |
+| `shap` | Tier 3 (#9) | SHAP TreeExplainer / DeepExplainer / KernelExplainer for local explanations |

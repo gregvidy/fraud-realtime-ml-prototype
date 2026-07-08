@@ -28,7 +28,7 @@ By the end of Phase 5, FraudML is:
 │  │                                                                                      │   │
 │  │  Bank Channels → API Gateway → Orchestrator → Rules SDK                              │   │
 │  │                       │                          │                                    │   │
-│  │                       │ /score (routing)         │ (training trigger)                 │   │
+│  │                       │ /score (routing)         │ (feedback loop)                    │   │
 │  │                       ▼                          ▼                                    │   │
 │  │              ┌─ FraudML Service ──────────────────────────────────────────────────┐   │   │
 │  │              │                                                                    │   │   │
@@ -49,17 +49,19 @@ By the end of Phase 5, FraudML is:
 │                                                                                              │
 │  ┌─ Data Layer ─────────────────────────────────────────────────────────────────────────┐   │
 │  │                                                                                      │   │
-│  │  ┌─ Streaming ──────────────────────────────────────────────────────────────────┐   │   │
-│  │  │  Source DB → Debezium → Kafka → ksqlDB → Redis (velocity) + ScyllaDB       │   │   │
+│  │  ┌─ Streaming (production) ─────────────────────────────────────────────────────┐   │   │
+│  │  │  Predator DB (outbox) → outbox-relay → Redpanda → 3 Python consumers +       │   │   │
+│  │  │  ClickHouse Kafka Engine → MergeTree + AggregatingMergeTree MVs (velocity)   │   │   │
+│  │  │  Legacy fallback: Debezium CDC → Redpanda (same downstream, unchanged)       │   │   │
 │  │  └──────────────────────────────────────────────────────────────────────────────┘   │   │
 │  │                                                                                      │   │
 │  │  ┌─ Batch ──────────┐  ┌─ Online ────────────┐  ┌─ Metadata ──────────────────┐   │   │
-│  │  │  ClickHouse /     │  │  Redis (hot)         │  │  PostgreSQL                 │   │   │
-│  │  │  Snowflake        │  │  ScyllaDB (durable)  │  │  ├ model_registry           │   │   │
-│  │  │  + dbt models     │  │  (dual-read)         │  │  ├ score_log (partitioned)  │   │   │
-│  │  └──────────────────┘  └──────────────────────┘  │  ├ monitoring_snapshot       │   │   │
-│  │                                                   │  └ tenant_config             │   │   │
-│  │                                                   └─────────────────────────────┘   │   │
+│  │  │  ClickHouse       │  │  Redis Cluster       │  │  PostgreSQL                 │   │   │
+│  │  │  (single offline  │  │  3P + 3R, AOF        │  │  ├ model_registry           │   │   │
+│  │  │   analytical DB,  │  │  Sole HOT store;     │  │  ├ score_log (partitioned)  │   │   │
+│  │  │   4 RBAC roles,   │  │  cold fallback →     │  │  ├ monitoring_snapshot       │   │   │
+│  │  │   dbt models)     │  │  ClickHouse MV       │  │  └ tenant_config             │   │   │
+│  │  └──────────────────┘  └──────────────────────┘  └─────────────────────────────┘   │   │
 │  └──────────────────────────────────────────────────────────────────────────────────────┘   │
 │                                                                                              │
 │  ┌─ Observability ──────────────────────────────────────────────────────────────────────┐   │
@@ -79,11 +81,11 @@ By the end of Phase 5, FraudML is:
 |------|-------------|------|
 | **Load test suite (Locust)** | Comprehensive Locust scripts: (1) sustained 2K TPS for 10 min, (2) burst 5× spike (10K TPS for 30s), (3) ramp-up from 0 → 3K TPS, (4) long-duration soak (2K TPS for 1 hour). | 3 |
 | **Multi-entity distribution** | Locust: realistic user/device/merchant distribution (Zipf). Not uniform random — some entities are hot (many txns), most are cold. | 1 |
-| **Redis-only benchmark** | Test with ScyllaDB disabled. Measure pure Redis performance ceiling. | 0.5 |
-| **Redis + ScyllaDB benchmark** | Test with dual-store. Measure fallback overhead. | 0.5 |
-| **ScyllaDB-only benchmark** | Test with Redis disabled (disaster recovery scenario). Measure degraded-mode performance. | 0.5 |
-| **Streaming feature latency** | Measure end-to-end: source DB INSERT → Debezium → Kafka → ksqlDB → Redis. Target < 5s. | 1 |
-| **Connection pool tuning** | Iterate on Redis pool size, asyncpg pool size, ScyllaDB pool size. Find optimal values for 2K TPS. | 2 |
+| **Redis Cluster hot-path benchmark** | Baseline: normal 3P+3R Redis Cluster with AOF. Measure P50/P95/P99 at 2K TPS. | 0.5 |
+| **Redis Cluster failover benchmark** | Kill a primary node during sustained load. Measure degraded-read window (target < 30s) and latency impact. | 0.5 |
+| **Cold-fallback benchmark** | Stop entire Redis Cluster. Scoring falls back to ClickHouse `main.mv_latest_features FINAL`. Measure degraded-mode P50/P99 (target < 100ms). | 0.5 |
+| **Streaming feature latency** | Measure end-to-end: Predator DB commit (outbox) → outbox-relay → Redpanda → `feature-store-updater` consumer → Redis sorted set update. Target < 3s. | 1 |
+| **Connection pool tuning** | Iterate on Redis Cluster pool size, asyncpg pool size, ClickHouse HTTP pool size. Find optimal values for 2K TPS. | 2 |
 | **Worker count optimization** | Test: 2/3/4/5 scoring replicas × 2/4/6 workers each. Find optimal configuration. | 1 |
 | **Results documentation** | Performance test report: methodology, results, bottleneck analysis, capacity planning recommendations. | 2 |
 
@@ -141,14 +143,15 @@ class FraudScoringUser(HttpUser):
 | **Burst (5×)** | 30s | ≥ 5,000 | < 100ms | < 200ms | < 500ms | < 1% | |
 | **Ramp** | 5 min | 0 → 3,000 | < 50ms at 2K | — | — | 0% | |
 | **Soak** | 1 hour | ≥ 2,000 | < 50ms | < 100ms | < 200ms | 0% | |
-| **Degraded (no Redis)** | 5 min | ≥ 500 | < 100ms | < 200ms | < 500ms | 0% | |
-| **Streaming latency** | — | — | — | — | — | E2E < 5s | |
+| **Redis failover (primary down)** | 60s | ≥ 2,000 | < 60ms | < 150ms | < 300ms | 0% | |
+| **Cold-fallback (Redis Cluster down)** | 5 min | ≥ 500 | < 100ms | < 200ms | < 500ms | 0% | |
+| **Streaming latency** | — | — | — | — | — | E2E < 3s | |
 
 ### 5.3.2 Security Hardening
 
 | Task | Description | Days |
 |------|-------------|------|
-| **TLS everywhere** | HTTPS for API Gateway, inter-service TLS (mTLS optional). Redis TLS. ScyllaDB TLS. PostgreSQL SSL. | 2 |
+| **TLS everywhere** | HTTPS for API Gateway, inter-service TLS (mTLS optional). Redis Cluster TLS. Redpanda TLS (SASL/SCRAM auth). ClickHouse TLS. PostgreSQL SSL. | 2 |
 | **Secrets management** | Docker secrets for all credentials. No hardcoded keys. Environment variables for non-sensitive config only. In K8s: Kubernetes Secrets or HashiCorp Vault. | 2 |
 | **RBAC** | API key per tenant. JWT with roles: `admin`, `ml-engineer`, `viewer`. Rate limiting per tenant. | 3 |
 | **ONNX-only model format** | Enforce ONNX serialization (no pickle). Validate ONNX model integrity with hash on load. | 1 |
@@ -166,7 +169,7 @@ class FraudScoringUser(HttpUser):
 | **GitHub Actions / GitLab CI** | Pipeline: lint → test → build images → push to registry → deploy to staging. | 3 |
 | **Unit tests** | Python: pytest for scoring service, feature registry, model lifecycle. Target: > 80% coverage on critical paths. | 5 |
 | **Integration tests** | Docker Compose test environment. Run: score request → verify response, train model → verify MLflow, CDC event → verify Redis update. | 3 |
-| **Feature registry validation** | CI step: `fraudml features validate` — ensures all referenced dbt models and ksqlDB tables exist. | 1 |
+| **Feature registry validation** | CI step: `fraudml features validate` — ensures all referenced dbt models, Redpanda topics (via Schema Registry), Redis key templates, and ClickHouse MVs exist. | 1 |
 | **Image tagging** | Semantic versioning: `fraudml-scoring:1.2.3`. Git SHA tags for traceability. | 0.5 |
 | **Staging → Production promotion** | Manual gate (approval in CI) or automated with canary validation. | 1 |
 | **Rollback procedure** | Documented: revert to previous image tag. Tested: rollback scoring service within 2 minutes. | 1 |
@@ -268,11 +271,11 @@ jobs:
 | Task | Description | Days |
 |------|-------------|------|
 | **Docker Compose (on-prem)** | Production-ready compose file with resource limits, restart policies, health checks, logging drivers, volume management. | 2 |
-| **Kubernetes Helm charts** | Helm chart for cloud deployment: scoring (Deployment + HPA), training (Job), Redis (StatefulSet), PostgreSQL (StatefulSet), Kafka (Strimzi operator). | 5 |
+| **Kubernetes Helm charts** | Helm chart for cloud deployment: scoring (Deployment + HPA), training (Job), Redis Cluster (StatefulSet, 3P+3R), PostgreSQL (StatefulSet), ClickHouse (StatefulSet), Redpanda (StatefulSet or Redpanda Operator). | 5 |
 | **HPA (Horizontal Pod Autoscaler)** | Scale scoring pods based on: CPU > 70%, custom metric (P95 latency > 50ms), or request rate. | 1 |
-| **Health probes** | Liveness: `/health` returns 200. Readiness: model loaded + Redis connected + ScyllaDB connected. Startup: model preloading complete. | 1 |
+| **Health probes** | Liveness: `/health` returns 200. Readiness: model loaded + Redis Cluster reachable + ClickHouse reachable (for cold fallback). Startup: model preloading complete. | 1 |
 | **Resource quotas** | Per-tenant resource limits (K8s). Prevent one tenant's training from starving another's scoring. | 1 |
-| **Backup & disaster recovery** | PostgreSQL: pg_dump daily. ScyllaDB: nodetool snapshot. Redis: RDB + AOF. ClickHouse: backup to S3. Tested restore procedure. | 2 |
+| **Backup & disaster recovery** | PostgreSQL: pg_dump daily. Redis Cluster: RDB + AOF, replicated to S3 hourly. ClickHouse: `BACKUP TO S3` daily. Redpanda: tiered storage to S3 (retention beyond local disk). Tested restore procedure. | 2 |
 | **Deployment documentation** | On-prem: single-page setup guide (Docker Compose). Cloud: Helm chart README + values examples. | 2 |
 
 **Subtotal: ~14 days**
@@ -291,12 +294,11 @@ helm/fraudml/
 │   ├── scoring-service.yaml
 │   ├── scoring-hpa.yaml
 │   ├── training-deployment.yaml
-│   ├── redis-statefulset.yaml
+│   ├── redis-cluster-statefulset.yaml    # 3 primary + 3 replica, AOF
 │   ├── postgres-statefulset.yaml
 │   ├── clickhouse-statefulset.yaml
-│   ├── kafka-strimzi.yaml      # Strimzi KafkaCluster CR
-│   ├── scylladb-statefulset.yaml
-│   ├── ksqldb-deployment.yaml
+│   ├── redpanda-cluster.yaml             # Redpanda Operator CR (3 broker nodes, KRaft)
+│   ├── outbox-relay-deployment.yaml      # transactional outbox relay (2 replicas)
 │   ├── mlflow-deployment.yaml
 │   ├── monitoring-cronjob.yaml
 │   ├── kong-ingress.yaml
@@ -340,26 +342,36 @@ training:
     cpusPerWorker: 4
 
 redis:
-  maxmemory: "2gb"
+  cluster:
+    enabled: true
+    primaryCount: 3
+    replicaCount: 3         # 1 replica per primary
+  maxmemory: "8gb"          # per node; 6 nodes → 48 GB cluster capacity
   persistence:
     enabled: true
-    size: "10Gi"
+    aof: true
+    size: "20Gi"            # per node
 
 postgres:
   storage: "50Gi"
-  
+
 clickhouse:
   storage: "200Gi"
 
-scylladb:
-  storage: "100Gi"
-  replicas: 3
-
-kafka:
+redpanda:
   replicas: 3
   storage: "50Gi"
   retention:
-    hours: 168    # 7 days
+    txnRawHours: 168        # 7 days for raw topics
+    txnScoredHours: 720     # 30 days for scored topic
+  tieredStorage:
+    enabled: true
+    s3Bucket: "fraudml-redpanda-tiered"
+
+outboxRelay:
+  replicas: 2               # HA via SELECT FOR UPDATE SKIP LOCKED
+  batchSize: 500
+  flushIntervalMs: 100
 
 monitoring:
   prometheus:
@@ -389,11 +401,11 @@ monitoring:
 
 | Task | Description | Days |
 |------|-------------|------|
-| **Runbook: scoring service degradation** | Steps: check Grafana → identify bottleneck (Redis/ScyllaDB/CPU) → scale or restart. | 1 |
+| **Runbook: scoring service degradation** | Steps: check Grafana → identify bottleneck (Redis Cluster / ClickHouse cold fallback / CPU) → scale or restart. | 1 |
 | **Runbook: training failure** | Steps: check MLflow → inspect logs → retry or escalate. | 0.5 |
-| **Runbook: CDC pipeline lag** | Steps: check Kafka consumer lag → check Debezium status → restart connector. | 0.5 |
+| **Runbook: streaming pipeline lag** | Steps: check Redpanda consumer group lag (`rpk group describe`) → check outbox-relay logs (or Debezium if fallback mode) → restart consumer or relay. | 0.5 |
 | **Runbook: model rollback** | Steps: API call → verify scoring reloaded → check Grafana for regression. | 0.5 |
-| **Capacity planning calculator** | Spreadsheet/script: input TPS target → output required replicas, Redis memory, ScyllaDB storage, Kafka throughput. | 1 |
+| **Capacity planning calculator** | Spreadsheet/script: input TPS target → output required replicas, Redis Cluster memory (nodes × maxmemory), ClickHouse storage, Redpanda broker count + retention. | 1 |
 | **SLA dashboard** | Grafana: SLA compliance (% time P50 < 50ms, P99 < 200ms, error rate < 0.1%). Monthly trend. | 1 |
 
 **Subtotal: ~4.5 days**
@@ -407,7 +419,8 @@ monitoring:
 | 1 | Sustained 2K TPS for 10 min | Locust report: 0% errors, P50 < 50ms, P99 < 200ms |
 | 2 | Burst 5K TPS for 30s | Locust report: < 1% errors, P99 < 500ms |
 | 3 | 1-hour soak test at 2K TPS | No memory leaks, stable latency, 0% errors |
-| 4 | Degraded mode (no Redis) at 500 TPS | Locust report: 0% errors, P50 < 100ms |
+| 4 | Redis Cluster failover under load | Locust report at 2K TPS during primary kill: 0% errors, P50 < 60ms (30s degraded window acceptable) |
+| 5 | Cold-fallback (Redis Cluster down) at 500 TPS | Locust report: 0% errors, P50 < 100ms |
 | 5 | TLS on all connections | `curl --insecure` fails; `curl --cacert` succeeds |
 | 6 | No pickle anywhere | Grep codebase: zero `pickle.loads` in serving path |
 | 7 | CI/CD pipeline green | Push to main → lint → test → build → scan → push → deploy |
@@ -429,9 +442,9 @@ monitoring:
 3. Show Kibana: structured logs flowing
 
 #### Act 2: Data Pipeline (5 min)
-4. Show Debezium CDC: source DB → Kafka → ksqlDB → Redis/ScyllaDB
-5. Insert a transaction in source DB → show it appear in Redis within 5 seconds
-6. Show ksqlDB: real-time velocity aggregates updating
+4. Show transactional outbox in action: `psql` executing `BEGIN; INSERT transactions; INSERT outbox_events; COMMIT;`— event lands in Redpanda within 2s (visible in `rpk topic consume`)
+5. Show ClickHouse Kafka Engine: `SELECT count() FROM main.transactions` updating in real time; server-side ingest, no Python in the loop
+6. Show ClickHouse Materialized Views: `SELECT countMerge(txn_count_state) FROM main.mv_user_velocity_5m WHERE user_id = 'u_042'` — aggregates updating live
 
 #### Act 3: Training (10 min)
 7. Define features: walk through YAML feature registry
@@ -456,9 +469,10 @@ monitoring:
 20. Show SLA dashboard: 30-day compliance
 
 #### Act 7: Resilience (5 min)
-21. Kill Redis → scoring continues via ScyllaDB (degraded)
-22. Restart Redis → cache repopulates → latency drops back to normal
-23. Kill one scoring replica → others absorb load → no client impact
+21. Kill a Redis Cluster primary → replica promotes within 30s; scoring keeps serving via replica reads
+22. `docker stop` the entire Redis Cluster → scoring falls back to ClickHouse `main.mv_latest_features FINAL` (P50 ~50ms, still 0% failures)
+23. Restart Redis Cluster → circuit breaker closes → hot path resumes; latency drops back to baseline
+24. Kill one scoring replica → others absorb load → no client impact
 
 ### Total demo time: ~45 minutes
 

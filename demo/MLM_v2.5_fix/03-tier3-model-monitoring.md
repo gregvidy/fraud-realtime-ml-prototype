@@ -22,14 +22,13 @@
 |-----------|-------|---------|----------|-------|
 | 8. Permutation importance | **Lead** | Engineer B (DB column migration) | Week 17-18 | ML-specific: sklearn `permutation_importance` + Spearman drift |
 | 9a. PDP (global) | **Lead** | Engineer A (Angular PDP charts) | Week 17-18 | ML-specific: `partial_dependence` at training time |
-| 9b. SHAP (local, on-demand + batch) | **Lead** | Engineer B (API endpoints + ExplainabilityLog DB) | Week 19-20 | ML-specific: TreeExplainer, async job pattern |
-| 9c. LIME (fallback) | **Lead** | — | Week 19-20 | Only for custom/NN — Lead implements entirely |
+| 9b. SHAP (local, on-demand + batch) | **Lead** | Engineer B (API endpoints + ExplainabilityLog DB) | Week 19-20 | ML-specific: TreeExplainer / DeepExplainer / KernelExplainer, async job pattern |
 | 9d. Explainability Angular UI | Engineer A | Lead (wireframe + requirements) | Week 17-20 | Tabs: Global, Local, Batch — charts + tables |
 | 9e. Explainability API + DB | Engineer B | Lead (defines contracts) | Week 17-20 | REST endpoints + ExplainabilityLog table |
 
 **Lead's role in Month 4**: Teaches PSI/drift concepts (1-hour session, Week 13). Codes PSI threshold logic. Reviews all monitoring PRs for correctness (e.g., histogram bucketing, async INSERT pattern).
 
-**Lead's role in Month 5**: Owns ALL explainability ML code — permutation importance, PDP, SHAP, LIME. This is the most ML-heavy month. Engineers handle UI rendering and API plumbing only.
+**Lead's role in Month 5**: Owns ALL explainability ML code — permutation importance, PDP, SHAP (TreeExplainer, DeepExplainer, KernelExplainer). This is the most ML-heavy month. Engineers handle UI rendering and API plumbing only.
 
 **Knowledge transfer sessions**:
 - Week 13: "What is PSI and why it matters" (30 min) — for Engineers A & B
@@ -330,10 +329,10 @@ ALTER TABLE ModelMonitoringSnapshot
 | Attribute | Detail |
 |-----------|--------|
 | **Complexity** | Medium-High |
-| **Effort** | 5-7 days |
-| **Owner** | **Lead** (all ML logic: SHAP, PDP, LIME, batch job) + Engineer A (Angular UI: 3 tabs) + Engineer B (API endpoints + ExplainabilityLog DB) |
+| **Effort** | 4-6 days |
+| **Owner** | **Lead** (all ML logic: SHAP, PDP, batch job) + Engineer A (Angular UI: 3 tabs) + Engineer B (API endpoints + ExplainabilityLog DB) |
 | **Calendar** | Month 5, Week 17-20 (full month) |
-| **Why Lead owns ML logic** | SHAP TreeExplainer, KernelExplainer, PDP, LIME — none of these can be delegated without ML background. Engineers render the output (charts, tables) which is standard frontend/backend work. |
+| **Why Lead owns ML logic** | SHAP TreeExplainer, DeepExplainer, KernelExplainer, PDP — none of these can be delegated without ML background. Engineers render the output (charts, tables) which is standard frontend/backend work. |
 | **Knowledge transfer** | Lead runs 1-hour session in Week 17: "What SHAP values mean, how to read a waterfall chart, PDP interpretation" — so engineers understand what they’re building UI for |
 
 A tiered approach to model explanation — different methods for different questions, computed at different times.
@@ -346,8 +345,9 @@ A tiered approach to model explanation — different methods for different quest
 | "Which features matter most overall?" | LightGBM built-in importance | Training time | Free | Global |
 | "How does feature X affect score in general?" | PDP (Partial Dependence Plots) | Training time | Medium | Global |
 | "How does feature X affect this specific prediction?" | ICE (Individual Conditional Expectation) | On-demand | Medium | Local |
-| "Why did this specific transaction score 0.87?" | SHAP TreeExplainer | On-demand / Batch | Medium-High | Local |
-| "Why did this specific transaction score 0.87?" | LIME | On-demand (fallback for custom/NN) | Medium | Local |
+| "Why did this specific transaction score 0.87?" | SHAP TreeExplainer | On-demand / Batch | Medium-High | Local (tree-based models) |
+| "Why did this specific transaction score 0.87?" | SHAP DeepExplainer | On-demand / Batch | Medium | Local (neural networks) |
+| "Why did this specific transaction score 0.87?" | SHAP KernelExplainer | On-demand | Medium-High | Local (any other model) |
 
 #### A. Global Explanations (Computed at Training Time)
 
@@ -405,7 +405,7 @@ ALTER TABLE TrainingModelRun
 
 **Not computed at scoring time (too expensive). Computed on-demand or in batch.**
 
-##### SHAP TreeExplainer (Primary — for tree-based models)
+##### SHAP Explainer Selection (TreeExplainer → DeepExplainer → KernelExplainer)
 
 ```python
 import shap
@@ -414,12 +414,20 @@ def explain_prediction(model, X_instance, feature_names, model_type="lightgbm"):
     """
     Explain a single prediction using SHAP.
     Called on-demand (user clicks "Explain" on a specific score).
+    Uses a 3-tier explainer hierarchy:
+      1. TreeExplainer  — exact, fast (tree-based models)
+      2. DeepExplainer  — DeepLIFT-based, fast (neural networks)
+      3. KernelExplainer — model-agnostic, slower (everything else)
     """
     if model_type in ["lightgbm", "xgboost", "random_forest", "gbm"]:
         # TreeExplainer: exact SHAP values for tree models (fast)
         explainer = shap.TreeExplainer(model)
+    elif model_type in ["neural_network", "deep_learning", "keras", "tensorflow", "pytorch"]:
+        # DeepExplainer: DeepLIFT + Shapley for neural networks (fast, NN-native)
+        background = shap.sample(X_background, 100)
+        explainer = shap.DeepExplainer(model, background)
     else:
-        # Fallback: KernelExplainer for custom/NN models (slower)
+        # KernelExplainer: model-agnostic fallback (slower, 30s-2min per prediction)
         # Use a background sample for efficiency
         background = shap.sample(X_background, 100)
         explainer = shap.KernelExplainer(model.predict_proba, background)
@@ -474,37 +482,6 @@ def batch_explain_top_risky(model, recent_scores_df, top_n=100):
     return explanations  # Store in ExplainabilityLog table
 ```
 
-##### LIME (Fallback for Custom/NN Models)
-
-```python
-import lime.lime_tabular
-
-def explain_with_lime(model, X_instance, X_train_sample, feature_names):
-    """
-    Fallback explainer for models where SHAP TreeExplainer doesn't work.
-    """
-    explainer = lime.lime_tabular.LimeTabularExplainer(
-        X_train_sample.values,
-        feature_names=feature_names,
-        class_names=["legitimate", "fraud"],
-        mode="classification"
-    )
-    
-    exp = explainer.explain_instance(
-        X_instance.values[0],
-        model.predict_proba,
-        num_features=10
-    )
-    
-    return {
-        "method": "LIME",
-        "features": [
-            {"name": name, "contribution": weight}
-            for name, weight in exp.as_list()
-        ]
-    }
-```
-
 #### API Endpoints
 
 ```
@@ -527,8 +504,8 @@ CREATE TABLE ExplainabilityLog (
     ModelId INT NOT NULL,
     TransactionId NVARCHAR(100),
     Score DECIMAL(10,6),
-    ExplanationMethod NVARCHAR(20),  -- 'shap', 'lime', 'batch_shap'
-    ExplanationJson NVARCHAR(MAX),   -- Full SHAP/LIME output
+    ExplanationMethod NVARCHAR(20),  -- 'tree_shap', 'deep_shap', 'kernel_shap', 'batch_shap'
+    ExplanationJson NVARCHAR(MAX),   -- Full SHAP output
     CreatedAt DATETIME2 DEFAULT GETUTCDATE(),
     INDEX IX_ExplainabilityLog_ModelId (ModelId, CreatedAt)
 );
@@ -560,7 +537,7 @@ CREATE TABLE ExplainabilityLog (
 
 #### Computation Cost & Risks
 
-See [05-caveats-and-risks.md](05-caveats-and-risks.md) → Tier 3 → `Model Explainability` for full risk assessment including SHAP blocking, LIME instability, and Angular rendering concerns.
+See [05-caveats-and-risks.md](05-caveats-and-risks.md) → Tier 3 → `Model Explainability` for full risk assessment including SHAP blocking, KernelSHAP latency, DeepSHAP backend dependency, and Angular rendering concerns.
 
 ---
 
@@ -572,9 +549,9 @@ See [05-caveats-and-risks.md](05-caveats-and-risks.md) → Tier 3 → `Model Exp
 | Throughput | ~500+ RPS | ~450+ RPS |
 | Monitoring | None | ✅ Score dist, PSI, latency |
 | Feature importance | Built-in only (biased) | ✅ Permutation importance (unbiased) + drift tracking |
-| Explainability | None | ✅ Global (PDP) + Local (SHAP/LIME) + Batch (nightly top risky) |
+| Explainability | None | ✅ Global (PDP) + Local (SHAP) + Batch (nightly top risky) |
 
-**Total effort: ~20-28 days (spread across 8 weeks / 2 months)**
+**Total effort: ~18-25 days (spread across 8 weeks / 2 months)**
 
 **Testing Gate — End of Month 4 (Monitoring)**:
 - Score logging adds <1ms overhead (benchmarked under load)
@@ -588,5 +565,6 @@ See [05-caveats-and-risks.md](05-caveats-and-risks.md) → Tier 3 → `Model Exp
 - PDP computed for top 10 features, renders correctly in Angular
 - On-demand SHAP returns explanation in <5s for single prediction
 - Batch SHAP job completes nightly for top 100 predictions
-- LIME fallback works for a non-tree model (test with dummy custom model)
+- DeepSHAP returns valid explanations for a neural network model (test with dummy Keras model)
+- KernelSHAP returns valid explanations for a custom model (test with dummy custom model)
 - All previous tier regressions pass

@@ -225,29 +225,30 @@ For CSV: require **pre-engineered features** (column names must match model inpu
 
 ---
 
-## Decision 10: Explainability Method — SHAP vs PDP vs LIME
+## Decision 10: Explainability Method — SHAP vs PDP
 
 Applies to Tier 3, Component #9.
 
 ### Comparison
 
-| Factor | SHAP (TreeExplainer) | PDP | LIME | Built-in Importance |
-|--------|---------------------|-----|------|---------------------|
-| **Scope** | Local (per-prediction) | Global | Local | Global |
-| **Question answered** | "Why this score?" | "How does feature X affect scores overall?" | "Why this score?" (approx.) | "Which features are used most?" |
-| **Computation cost** | ~100ms per prediction (tree models) | ~30s per model (training time) | ~2-5s per prediction | Free |
-| **Faithfulness** | ✅ Exact for tree models | 🟡 Marginal (ignores interactions) | 🟡 Local approximation | 🟡 Biased toward high-cardinality |
-| **Model-agnostic** | ❌ TreeExplainer is tree-only | ✅ Any model | ✅ Any model | ❌ Algorithm-specific |
-| **Windows-compatible** | ✅ | ✅ | ✅ | ✅ |
+| Factor | SHAP (TreeExplainer) | SHAP (DeepExplainer) | SHAP (KernelExplainer) | PDP | Built-in Importance |
+|--------|---------------------|---------------------|----------------------|-----|---------------------|
+| **Scope** | Local (per-prediction) | Local (per-prediction) | Local (per-prediction) | Global | Global |
+| **Question answered** | "Why this score?" | "Why this score?" (NN) | "Why this score?" (any) | "How does feature X affect scores overall?" | "Which features are used most?" |
+| **Computation cost** | ~100ms per prediction (tree models) | ~200-500ms per prediction (neural nets) | ~30s-2min per prediction | ~30s per model (training time) | Free |
+| **Faithfulness** | ✅ Exact for tree models | ✅ DeepLIFT-based (faithful for NNs) | ✅ Exact Shapley values (model-agnostic) | 🟡 Marginal (ignores interactions) | 🟡 Biased toward high-cardinality |
+| **Model-agnostic** | ❌ Tree-only | ❌ NN-only (TF/Keras/PyTorch) | ✅ Any model | ✅ Any model | ❌ Algorithm-specific |
+| **Windows-compatible** | ✅ | ✅ | ✅ | ✅ | ✅ |
 
-### Recommendation: Tiered Approach
+### Recommendation: Tiered SHAP Approach
 
 | Layer | Method | When | Who Uses It |
 |-------|--------|------|-------------|
 | **Always** | Built-in + Permutation importance | Training time | Analysts, model reports |
 | **Always** | PDP (top 10 features) | Training time | Stakeholders |
-| **On-demand** | SHAP TreeExplainer | User-triggered or batch nightly | Investigators |
-| **Fallback** | LIME | On-demand (custom/NN models only) | Same as SHAP |
+| **On-demand** | SHAP TreeExplainer | User-triggered or batch nightly | Investigators (tree-based models) |
+| **On-demand** | SHAP DeepExplainer | User-triggered or batch nightly | Investigators (neural networks) |
+| **Fallback** | SHAP KernelExplainer | On-demand (any other model) | Same as above |
 
 **Do NOT compute SHAP at scoring time** — compute it after-the-fact when someone asks "why?".
 
@@ -268,4 +269,4 @@ Applies to Tier 3, Component #9 — how to serve SHAP explanations.
 
 ### Recommendation
 
-**Synchronous for tree models** (TreeExplainer is fast: ~100ms). **Async for custom/NN models** (LIME/KernelSHAP can take 5-30s). Route based on `model.Algorithm`.
+**Synchronous for tree models** (TreeExplainer is fast: ~100ms). **Async for NN/custom models** (DeepSHAP ~200-500ms, KernelSHAP can take 30s-2min). Route based on `model.Algorithm`.

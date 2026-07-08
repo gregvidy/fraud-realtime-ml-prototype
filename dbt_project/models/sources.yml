@@ -3,9 +3,10 @@ version: 2
 sources:
   - name: raw
     description: >
-      Raw operational tables exported from PostgreSQL into DuckDB by
-      scripts/export_pg_to_duckdb.py. PostgreSQL remains the system-of-record
-      for raw transactional data; DuckDB is the offline analytical store.
+      Raw operational tables exported from PostgreSQL into ClickHouse by
+      scripts/export_pg_to_clickhouse.py. PostgreSQL remains the
+      system-of-record for raw transactional data; ClickHouse is the
+      offline analytical store.
     schema: raw
     tables:
       - name: raw_transactions

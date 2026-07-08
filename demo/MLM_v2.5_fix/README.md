@@ -73,7 +73,7 @@ MLM v2.5 Fixation/
 │     PSI alerts
 │
 │   Tier 3b: Explainability (Month 5)          ← Engineering
-│     2 components — permutation importance, SHAP/PDP/LIME
+│     2 components — permutation importance, SHAP/PDP
 │
 ├── 04. Option Comparison: v2.5 Architecture   ← READ BEFORE DECIDING (Both)
 │     11 architecture decisions with side-by-side tables

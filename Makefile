@@ -1,4 +1,4 @@
-.PHONY: help setup infra-up infra-down seed-data reseed-data append-data _truncate-raw dbt-run feast-apply materialize train train-only train-isolated train-only-isolated start-api start-api-dev stop-api stream-events score-test load-test load-test-ui clean export-to-duckdb offline-pipeline migrate-db mlflow-ui promote-model alias-model list-models docker-stats push-artifacts deploy-aws deploy-push deploy-init deploy-stop deploy-start deploy-terminate deploy-local deploy-local-down train-docker train-docker-watch stream-docker stream-docker-stop ssm-setup ssm-shell ssm-tunnel ssm-tunnel-mlflow ssm-tunnel-locust start-remote-locust cluster-up cluster-down cluster-status argocd-password argocd-ui
+.PHONY: help setup infra-up infra-down seed-data reseed-data append-data _truncate-raw dbt-run feast-apply materialize train train-only train-isolated train-only-isolated start-api start-api-dev stop-api stream-events stream-producer stream-consumer score-test load-test load-test-ui clean export-to-clickhouse offline-pipeline migrate-db mlflow-ui promote-model alias-model list-models docker-stats push-artifacts deploy-aws deploy-push deploy-init deploy-stop deploy-start deploy-terminate deploy-local deploy-local-down train-docker train-docker-watch stream-docker stream-docker-stop ssm-setup ssm-shell ssm-tunnel ssm-tunnel-mlflow ssm-tunnel-locust start-remote-locust ch-up ch-down ch-logs ch-status ch-shell ch-verify-rbac stream-up stream-down stream-topics stream-schemas stream-schemas-list stream-status stream-logs stream-console stream-ch-apply stream-ch-status stream-ch-lag stream-ch-drop outbox-migrate outbox-relay outbox-produce outbox-status stream-ch-fallback-test cluster-up cluster-down cluster-status argocd-password argocd-ui
 
 CONDA_ENV := fraud-realtime-ml
 CONDA_PREFIX := $(shell conda info --base)/envs/$(CONDA_ENV)
@@ -25,13 +25,30 @@ help:
 	@echo "  make append-data             Append new generated data on top of existing rows"
 	@echo "  make append-data START_DATE=2026-04-01 END_DATE=2026-06-30  Extend existing dataset"
 	@echo ""
-	@echo "  ── Offline pipeline (DuckDB) ─────────────────────────────────────"
-	@echo "  make export-to-duckdb        Export Postgres raw tables → DuckDB offline store"
-	@echo "  make dbt-run                 Run dbt models against DuckDB (staging → features)"
+	@echo "  ── Offline pipeline (ClickHouse) ──────────────────────────"
+	@echo "  make export-to-clickhouse    Export Postgres raw tables → ClickHouse offline store"
+	@echo "  make dbt-run                 Run dbt models against ClickHouse (staging → features)"
 	@echo "  make feast-apply             Register versioned Feast feature views"
 	@echo "  make materialize             Export Parquet + push offline features → Redis (auto-detects data range)"
 	@echo "  make offline-pipeline        Run full offline pipeline end-to-end (export → dbt → materialize)"
+	@echo "  make ch-status               Show ClickHouse version, databases, and RBAC users"
+	@echo "  make ch-shell                Open interactive clickhouse-client (admin user)"
+	@echo "  make ch-verify-rbac          Run the 24-assertion RBAC test suite"
 	@echo "  make migrate-db              Apply SQL migrations to Postgres (adds new columns etc.)"
+	@echo ""
+	@echo "  ── Streaming (Redpanda) ─────────────────────────────────────────"
+	@echo "  make stream-up               Start Redpanda + Console; create 8 topics; register 3 Avro schemas"
+	@echo "  make stream-down             Stop Redpanda + Console"
+	@echo "  make stream-topics           (Re-)create the 8 topics from streaming/rpk/topics.sh"
+	@echo "  make stream-schemas          Register / re-register Avro schemas with Schema Registry"
+	@echo "  make stream-schemas-list     List registered subjects + versions"
+	@echo "  make stream-status           Show cluster health, topics, consumer groups"
+	@echo "  make stream-console          Open Redpanda Console (http://localhost:8080)"
+	@echo "  make stream-logs             Tail Redpanda broker logs"
+	@echo "  make stream-producer [EPS=200 MIX=visa=0.5,qris=0.5 DURATION=60 SEED=42]"
+	@echo "                               Publish synthetic multi-channel events to Redpanda"
+	@echo "  make stream-consumer NAME=<name> [DURATION=30]"
+	@echo "                               Run a consumer (fraud_decisioning | feature_store_updater | postgres_sink)"
 	@echo ""
 	@echo "  ── Training & serving ────────────────────────────────────────────"
 	@echo "  make train          Build training dataset (Feast PIT join + online_feature_log) + train model"
@@ -60,10 +77,21 @@ setup:
 
 infra-up:
 	@if command -v docker >/dev/null 2>&1; then \
-		docker compose up -d postgres redis && sleep 3 && docker compose ps; \
+		docker compose up -d postgres redis clickhouse && sleep 3 && $(MAKE) --no-print-directory _ch-wait && docker compose ps; \
 	else \
 		$(MAKE) infra-up-native; \
 	fi
+
+# Internal: block until ClickHouse reports healthy (used by infra-up).
+_ch-wait:
+	@echo "Waiting for ClickHouse to become healthy..."
+	@for i in $$(seq 1 30); do \
+		if docker inspect --format='{{.State.Health.Status}}' $(CLICKHOUSE_CONTAINER) 2>/dev/null | grep -q healthy; then \
+			echo "ClickHouse: OK"; exit 0; \
+		fi; \
+		sleep 2; \
+	done; \
+	echo "ClickHouse did not become healthy in time"; docker logs --tail 60 $(CLICKHOUSE_CONTAINER); exit 1
 
 infra-up-native:
 	@echo "Starting Postgres and Redis via Homebrew services..."
@@ -90,6 +118,207 @@ infra-reset:
 		rm -rf /tmp/fraud_pgdata; \
 		brew services stop redis || true; \
 	fi
+
+# ── ClickHouse (offline analytical store — sole offline store since slice 5) ──
+CLICKHOUSE_CONTAINER ?= fraud_clickhouse
+
+ch-up:
+	docker compose up -d clickhouse
+	@$(MAKE) --no-print-directory _ch-wait
+
+ch-down:
+	docker compose stop clickhouse
+
+ch-logs:
+	docker logs --tail 200 -f $(CLICKHOUSE_CONTAINER)
+
+ch-status:
+	@docker exec $(CLICKHOUSE_CONTAINER) clickhouse-client --user default \
+		--password "$${CLICKHOUSE_ADMIN_PASSWORD:-admin_pass}" \
+		--query "SELECT version() AS version, currentDatabase() AS db, hostName() AS host FORMAT PrettyCompactMonoBlock"
+	@echo "── Databases ──"
+	@docker exec $(CLICKHOUSE_CONTAINER) clickhouse-client --user default \
+		--password "$${CLICKHOUSE_ADMIN_PASSWORD:-admin_pass}" \
+		--query "SHOW DATABASES"
+	@echo "── Users ──"
+	@docker exec $(CLICKHOUSE_CONTAINER) clickhouse-client --user default \
+		--password "$${CLICKHOUSE_ADMIN_PASSWORD:-admin_pass}" \
+		--query "SELECT name, storage FROM system.users WHERE name NOT IN ('default') ORDER BY name FORMAT PrettyCompactMonoBlock"
+
+# Open an interactive shell as the default (admin) user
+ch-shell:
+	docker exec -it $(CLICKHOUSE_CONTAINER) clickhouse-client --user default \
+		--password "$${CLICKHOUSE_ADMIN_PASSWORD:-admin_pass}"
+
+# Verifies each of the 4 POC roles authenticates and gets the expected grants.
+# Exit code 0 = all assertions passed.
+ch-verify-rbac:
+	@bash scripts/verify_clickhouse_rbac.sh
+
+# ── Redpanda streaming (broker + Schema Registry + Console UI) ───────────
+REDPANDA_CONTAINER ?= fraud_redpanda
+
+# Start Redpanda + Console, wait for health, create topics, register schemas.
+stream-up:
+	docker compose up -d redpanda redpanda-console
+	@echo "Waiting for Redpanda to become healthy..."
+	@for i in $$(seq 1 30); do \
+		if docker inspect --format='{{.State.Health.Status}}' $(REDPANDA_CONTAINER) 2>/dev/null | grep -q healthy; then \
+			echo "Redpanda: OK"; break; \
+		fi; \
+		sleep 2; \
+	done
+	@$(MAKE) --no-print-directory stream-topics
+	@$(MAKE) --no-print-directory stream-schemas
+	@echo ""
+	@echo "Redpanda Console: http://localhost:8080"
+	@echo "Schema Registry:  http://localhost:8081"
+
+stream-down:
+	docker compose stop redpanda redpanda-console
+
+# Create the 8 topics (6 channels + txn.scored + login.events)
+stream-topics:
+	@bash streaming/rpk/topics.sh
+
+# Register the 3 Avro schemas (8 subjects — 6 channels share TxnEvent)
+stream-schemas:
+	$(PYTHON) -m streaming.schema_registry register
+
+stream-schemas-list:
+	$(PYTHON) -m streaming.schema_registry list
+
+# Show topics + consumer groups + broker health
+stream-status:
+	@echo "── Redpanda cluster health ──"
+	@docker exec $(REDPANDA_CONTAINER) rpk cluster health
+	@echo ""
+	@echo "── Topics ──"
+	@docker exec $(REDPANDA_CONTAINER) rpk topic list
+	@echo ""
+	@echo "── Consumer groups ──"
+	@docker exec $(REDPANDA_CONTAINER) rpk group list
+
+stream-logs:
+	docker logs --tail 200 -f $(REDPANDA_CONTAINER)
+
+# Open the Redpanda Console web UI (Linux xdg-open / macOS open — falls back to printing URL)
+stream-console:
+	@command -v xdg-open >/dev/null && xdg-open http://localhost:8080 \
+		|| command -v open >/dev/null && open http://localhost:8080 \
+		|| echo "Redpanda Console: http://localhost:8080"
+
+# ── ClickHouse streaming ingest (Slice 9: Kafka Engine + MVs) ────────────
+# Apply / re-apply Kafka Engine tables + landing MVs + velocity MVs.
+# Idempotent — MergeTree destinations use IF NOT EXISTS (data preserved),
+# Kafka Engine tables + MVs are dropped and recreated.
+stream-ch-apply:
+	@bash scripts/apply_clickhouse_streaming.sh
+
+# Row counts + latest event timestamp per stream destination.
+stream-ch-status:
+	@docker exec $(CLICKHOUSE_CONTAINER) clickhouse-client --user default \
+		--password "$${CLICKHOUSE_ADMIN_PASSWORD:-admin_pass}" --multiquery --query "\
+		SELECT 'main.stream_transactions' AS tbl, count() AS rows, max(event_timestamp) AS latest FROM main.stream_transactions UNION ALL \
+		SELECT 'main.stream_scored_txns',       count(),        max(event_timestamp) FROM main.stream_scored_txns UNION ALL \
+		SELECT 'main.stream_logins',            count(),        max(event_timestamp) FROM main.stream_logins UNION ALL \
+		SELECT 'main.stream_user_velocity_5m',  count(),        max(window_start)    FROM main.stream_user_velocity_5m UNION ALL \
+		SELECT 'main.stream_user_velocity_1h',  count(),        max(window_start)    FROM main.stream_user_velocity_1h UNION ALL \
+		SELECT 'main.stream_user_velocity_24h', count(),        max(window_start)    FROM main.stream_user_velocity_24h UNION ALL \
+		SELECT 'main.stream_device_velocity_5m',count(),        max(window_start)    FROM main.stream_device_velocity_5m UNION ALL \
+		SELECT 'main.stream_device_velocity_1h',count(),        max(window_start)    FROM main.stream_device_velocity_1h UNION ALL \
+		SELECT 'main.stream_latest_features',   count(),        max(event_timestamp) FROM main.stream_latest_features \
+		FORMAT PrettyCompactMonoBlock"
+
+# Consumer-group lag for the 3 ClickHouse Kafka-Engine groups.
+stream-ch-lag:
+	@echo "── ClickHouse Kafka-Engine consumer lag ──"
+	@docker exec $(REDPANDA_CONTAINER) rpk group describe -s clickhouse-analytics-v1 clickhouse-scored-v1 clickhouse-logins-v1
+
+# Drop all Kafka Engine tables + MVs (keeps destination MergeTree data).
+# Use to reset consumer group offsets by bumping the *-v1 suffix in the SQL.
+stream-ch-drop:
+	@docker exec $(CLICKHOUSE_CONTAINER) clickhouse-client --user default \
+		--password "$${CLICKHOUSE_ADMIN_PASSWORD:-admin_pass}" --multiquery --query "\
+		DROP TABLE IF EXISTS main.mv_stream_transactions_ingest SYNC; \
+		DROP TABLE IF EXISTS main.mv_stream_scored_ingest SYNC; \
+		DROP TABLE IF EXISTS main.mv_stream_logins_ingest SYNC; \
+		DROP TABLE IF EXISTS main.mv_stream_user_velocity_5m SYNC; \
+		DROP TABLE IF EXISTS main.mv_stream_user_velocity_1h SYNC; \
+		DROP TABLE IF EXISTS main.mv_stream_user_velocity_24h SYNC; \
+		DROP TABLE IF EXISTS main.mv_stream_device_velocity_5m SYNC; \
+		DROP TABLE IF EXISTS main.mv_stream_device_velocity_1h SYNC; \
+		DROP TABLE IF EXISTS main.mv_stream_latest_features_user SYNC; \
+		DROP TABLE IF EXISTS main.mv_stream_latest_features_device SYNC; \
+		DROP TABLE IF EXISTS raw.stream_txn_kafka SYNC; \
+		DROP TABLE IF EXISTS raw.stream_scored_kafka SYNC; \
+		DROP TABLE IF EXISTS raw.stream_login_kafka SYNC;"
+	@echo "Kafka Engine tables + MVs dropped (destination MergeTree tables preserved)."
+
+# ── Transactional outbox + cold-fallback (Slice 10) ──────────────────────
+# Apply the outbox_events table + partial index to the running Postgres.
+outbox-migrate:
+	@bash scripts/apply_outbox_migration.sh
+
+# Run the outbox relay (poll → publish → mark). Ctrl+C or DURATION exit cleanly.
+outbox-relay:
+	$(PYTHON) -m streaming.outbox_relay \
+		$(if $(DURATION),--duration $(DURATION),) \
+		$(if $(BATCH_SIZE),--batch-size $(BATCH_SIZE),)
+
+# Dual-write emulator — INSERTs to raw_transactions + outbox_events in one tx.
+# Same knobs as `stream-producer` (EPS / MIX / DURATION / SEED / FRAUD_RATE).
+outbox-produce:
+	$(PYTHON) -m streaming.outbox_producer \
+		--eps $(EPS) \
+		--channel-mix "$(MIX)" \
+		$(if $(DURATION),--duration $(DURATION),) \
+		$(if $(SEED),--seed $(SEED),) \
+		$(if $(FRAUD_RATE),--fraud-rate $(FRAUD_RATE),)
+
+# Outbox depth + throughput snapshot.
+outbox-status:
+	@docker exec -e PGPASSWORD="$${POSTGRES_PASSWORD:-fraud_pass}" fraud_postgres \
+		psql -U $${POSTGRES_USER:-fraud_user} -d $${POSTGRES_DB:-fraud_db} -c "\
+		SELECT \
+		  (SELECT count(*) FROM outbox_events)                          AS total, \
+		  (SELECT count(*) FROM outbox_events WHERE published_at IS NULL) AS unpublished, \
+		  (SELECT count(*) FROM outbox_events WHERE published_at IS NOT NULL) AS published, \
+		  (SELECT max(published_at) FROM outbox_events)                  AS last_published_at;"
+
+# End-to-end cold-fallback drill: pause Redis → curl /score → resume Redis.
+# Requires make start-api to be running.
+# Uses DIFFERENT user_ids per call so the per-entity TTL cache (60s) doesn't
+# mask the Redis miss. Each user_id must be present in stream_latest_features
+# (produce events first via `make stream-producer`).
+stream-ch-fallback-test:
+	@echo "── health check (BEFORE) ──"
+	@curl -sS http://localhost:8000/health && echo ""
+	@echo ""
+	@echo "── score via HOT path (Redis available, user u_000042) ──"
+	@curl -sS -X POST http://localhost:8000/score -H "Content-Type: application/json" \
+		-d '{"transaction_id":"cold-fb-hot-1","user_id":"u_000042","device_id":"d_0000001","merchant_id":"m_00001","amount":250.00,"currency":"USD","payment_method":"card","country_code":"US","is_international":false}' \
+		| python3 -m json.tool
+	@echo ""
+	@echo "── pausing Redis (docker pause) ──"
+	@docker pause fraud_redis
+	@echo "── score via COLD path (Redis paused, CH fallback, user u_000199) ──"
+	@curl -sS -X POST http://localhost:8000/score -H "Content-Type: application/json" \
+		-d '{"transaction_id":"cold-fb-cold-1","user_id":"u_000199","device_id":"d_0000002","merchant_id":"m_00002","amount":250.00,"currency":"USD","payment_method":"card","country_code":"US","is_international":false}' \
+		| python3 -m json.tool
+	@echo ""
+	@echo "── resuming Redis ──"
+	@docker unpause fraud_redis
+	@sleep 1
+	@echo "── score via HOT path (Redis resumed, user u_000356) ──"
+	@curl -sS -X POST http://localhost:8000/score -H "Content-Type: application/json" \
+		-d '{"transaction_id":"cold-fb-hot-2","user_id":"u_000356","device_id":"d_0000003","merchant_id":"m_00003","amount":250.00,"currency":"USD","payment_method":"card","country_code":"US","is_international":false}' \
+		| python3 -m json.tool
+
+# Export raw Postgres tables → ClickHouse `raw` schema.
+# Uses ClickHouse's postgresql() table function (server-side copy, no pandas).
+export-to-clickhouse:
+	$(PYTHON) scripts/export_pg_to_clickhouse.py $(if $(TABLES),--tables $(TABLES),)
 
 seed-data:
 	$(PYTHON) simulator/generate_reference_data.py
@@ -125,30 +354,26 @@ append-data:
 		$(if $(FRAUD_RATE_MAX),--fraud-rate-max $(FRAUD_RATE_MAX),) \
 		$(if $(SEED),--seed $(SEED),)
 
-# Export raw Postgres tables → DuckDB offline store
-export-to-duckdb:
-	$(PYTHON) scripts/export_pg_to_duckdb.py $(if $(DB_PATH),--db-path $(DB_PATH),)
-
 dbt-run:
-	cd dbt_project && $(DBT) run --profiles-dir . --target duckdb
-	cd dbt_project && $(DBT) test --profiles-dir . --target duckdb
+	cd dbt_project && $(DBT) run --profiles-dir . --target clickhouse
+	cd dbt_project && $(DBT) test --profiles-dir . --target clickhouse
 
-# Export DuckDB feature tables to Parquet + materialize into Redis
+# Export ClickHouse feature tables to Parquet + materialize into Redis
 materialize:
 	$(PYTHON) scripts/materialize_features.py $(if $(DAYS),--days $(DAYS),)
 
 dbt-docs:
-	cd dbt_project && $(DBT) docs generate --profiles-dir . --target duckdb
+	cd dbt_project && $(DBT) docs generate --profiles-dir . --target clickhouse
 	cd dbt_project && $(DBT) docs serve --profiles-dir .
 
 dbt-show:
-	cd dbt_project && $(DBT) show --select $(MODEL) --profiles-dir . --target duckdb --limit $(or $(LIMIT),10)
+	cd dbt_project && $(DBT) show --select $(MODEL) --profiles-dir . --target clickhouse --limit $(or $(LIMIT),10)
 
 feast-apply:
 	cd feast_repo/feature_repo && $(FEAST) apply
 
 # Full offline pipeline: export → dbt → feast materialize
-offline-pipeline: export-to-duckdb dbt-run materialize
+offline-pipeline: export-to-clickhouse dbt-run materialize
 
 # Apply SQL migrations to Postgres (run once after upgrading)
 POSTGRES_CONTAINER ?= fraud_postgres
@@ -167,7 +392,7 @@ migrate-db:
 	@echo "All migrations applied."
 
 train:
-	$(PYTHON) training/build_training_dataset.py $(if $(DB_PATH),--db-path $(DB_PATH),) $(if $(SAMPLE),--sample-frac $(SAMPLE),)
+	$(PYTHON) training/build_training_dataset.py $(if $(SAMPLE),--sample-frac $(SAMPLE),)
 	$(PYTHON) training/train_model.py $(if $(CONFIG),--config $(CONFIG),)
 	$(PYTHON) training/evaluate_model.py
 
@@ -184,7 +409,7 @@ train-isolated:
 	@command -v cpulimit >/dev/null 2>&1 || (echo "cpulimit not found — run: brew install cpulimit"; exit 1)
 	@echo "[DEMO] Training node plane — capped at 400% CPU (4 cores)"
 	cpulimit --limit 400 --include-children -- \
-		sh -c '$(PYTHON) training/build_training_dataset.py $(if $(DB_PATH),--db-path $(DB_PATH),) $(if $(SAMPLE),--sample-frac $(SAMPLE),) && \
+		sh -c '$(PYTHON) training/build_training_dataset.py $(if $(SAMPLE),--sample-frac $(SAMPLE),) && \
 		       $(PYTHON) training/train_model.py $(if $(CONFIG),--config $(CONFIG),) && \
 		       $(PYTHON) training/evaluate_model.py'
 
@@ -301,8 +526,39 @@ load-test-ui:
 	@echo "Open http://localhost:8089 in your browser, then configure users + host"
 	$(LOCUST) -f locustfile.py --host $(API_HOST)
 
-stream-events:
-	$(PYTHON) simulator/stream_transactions.py
+stream-events: stream-producer   ## Alias for stream-producer (backward compat)
+
+# Publish synthetic multi-channel transaction events to Redpanda.
+#   EPS         events per second (default: 100)
+#   MIX         channel-mix string, e.g. "visa=0.5,qris=0.5" (default: bank-realistic)
+#   DURATION    seconds to run (default: 0 = until Ctrl+C)
+#   SEED        RNG seed for reproducibility
+#   FRAUD_RATE  probability of injecting synthetic fraud per event
+#   USE_DB      when set to 1, load user/device/merchant IDs from Postgres
+#   DRY_RUN     when set to 1, generate + tally events but don't publish
+# NB: $(or ...) is comma-tokenised by make — commas in the default string get
+# treated as argument separators. Use `?=` for the default so commas survive.
+EPS ?= 100
+MIX ?= visa=0.35,mastercard=0.25,qris=0.20,debit=0.10,amex=0.05,digital=0.05
+stream-producer:
+	$(PYTHON) simulator/stream_transactions.py \
+		--eps $(EPS) \
+		--channel-mix "$(MIX)" \
+		$(if $(DURATION),--duration $(DURATION),) \
+		$(if $(SEED),--seed $(SEED),) \
+		$(if $(FRAUD_RATE),--fraud-rate $(FRAUD_RATE),) \
+		$(if $(USE_DB),--use-db,) \
+		$(if $(DRY_RUN),--dry-run,)
+
+# Run one of the streaming consumers.
+#   NAME:      fraud_decisioning | feature_store_updater | postgres_sink
+#   DURATION:  seconds to run (default: 0 = until Ctrl+C)
+stream-consumer:
+	@if [ -z "$(NAME)" ]; then \
+		echo "Usage: make stream-consumer NAME=<fraud_decisioning|feature_store_updater|postgres_sink> [DURATION=30]"; \
+		exit 1; \
+	fi
+	$(PYTHON) -m streaming.run $(NAME) $(if $(DURATION),--duration $(DURATION),)
 
 score-test:
 	curl -s -X POST http://localhost:8000/score \
@@ -317,7 +573,7 @@ clean:
 	rm -rf models/*.pkl models/*.json
 	rm -rf dbt_project/target dbt_project/logs dbt_project/.user.yml
 	rm -rf training/datasets/
-	rm -rf data/duckdb/*.duckdb data/duckdb/*.wal data/duckdb/parquet/*.parquet
+	rm -rf data/parquet/*.parquet
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 
 # ==============================================================================

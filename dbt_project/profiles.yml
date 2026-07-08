@@ -1,19 +1,22 @@
 fraud_features:
-  target: duckdb
+  target: clickhouse
   outputs:
-    # ── Offline analytical target (primary) ────────────────────────────────
-    duckdb:
-      type: duckdb
-      path: "{{ env_var('DUCKDB_PATH', '../data/duckdb/fraud_offline.duckdb') }}"
+    # ── ClickHouse: sole offline analytical store ──────────────────────────
+    # Uses the `service_writer` role which has INSERT/SELECT/DDL grants on
+    # main.* (see infra/clickhouse/02-init-rbac.sh).
+    clickhouse:
+      type: clickhouse
+      driver: http
+      host: "{{ env_var('CLICKHOUSE_HOST', 'localhost') }}"
+      port: "{{ env_var('CLICKHOUSE_PORT', '8123') | int }}"
+      user: service_writer
+      password: "{{ env_var('CLICKHOUSE_SW_PASSWORD', 'sw_pass') }}"
       schema: main
-      threads: 4
-    # ── Legacy Postgres target (operational raw data only) ─────────────────
-    dev:
-      type: postgres
-      host: "{{ env_var('POSTGRES_HOST', 'localhost') }}"
-      port: "{{ env_var('POSTGRES_PORT', '5432') | int }}"
-      user: "{{ env_var('POSTGRES_USER', 'fraud_user') }}"
-      password: "{{ env_var('POSTGRES_PASSWORD', 'fraud_pass') }}"
-      dbname: "{{ env_var('POSTGRES_DB', 'fraud_db') }}"
-      schema: public
-      threads: 4
+      secure: false
+      threads: 2
+      # threads=2 keeps the 3 concurrent fact-model joins from blowing past
+      # the container's ~14 GiB usable memory. Intermediate models are cheap
+      # (window functions, ~2s each) so lower concurrency has no perf cost.
+      # No custom join_algorithm — CH picks per-query. Intermediate models
+      # use window functions (no joins). Fact models use hash join by
+      # default for the equi-JOINs across per-transaction feature tables.

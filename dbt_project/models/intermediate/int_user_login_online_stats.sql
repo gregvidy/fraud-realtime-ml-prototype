@@ -1,56 +1,32 @@
 {{ config(
-    materialized='incremental',
-    unique_key='transaction_id'
+    materialized='table',
+    engine='MergeTree()',
+    order_by='(user_id, event_timestamp, transaction_id)',
+    partition_by='toYYYYMM(event_timestamp)'
 ) }}
 
 -- int_user_login_online_stats.sql
--- Per-user short-window failed login count for training.
--- Mirrors Redis get_user_login_features(): user_login_fail_zset window 15m.
--- One row per (user_id, transaction_id) — point-in-time correct.
--- Uses UNION ALL + RANGE window frames to avoid expensive cross-table joins.
+-- Per-transaction failed-login counts over SHORT windows (15m/1h) — batch
+-- mirror of Redis user_login_fail_zset. Same UNION-ALL + window pattern as
+-- int_user_login_stats, with sub-hour windows.
 
-WITH logins AS (
-    SELECT * FROM {{ ref('stg_login_events') }}
-),
-
-txns AS (
-    SELECT
-        transaction_id,
-        user_id,
-        event_timestamp
-    FROM {{ ref('stg_transactions') }}
-),
-
-events AS (
+WITH events AS (
     SELECT transaction_id, user_id, event_timestamp, 0 AS is_failed_login
-    FROM txns
+    FROM {{ ref('stg_transactions') }}
     UNION ALL
-    SELECT NULL AS transaction_id, user_id, event_timestamp, 1 AS is_failed_login
-    FROM logins
+    SELECT '' AS transaction_id, user_id, event_timestamp, 1 AS is_failed_login
+    FROM {{ ref('stg_login_events') }}
     WHERE login_status = 'failed'
-),
-
-windowed AS (
-    SELECT
-        transaction_id,
-        user_id,
-        event_timestamp,
-
-        COALESCE(SUM(is_failed_login) OVER (
-            PARTITION BY user_id ORDER BY event_timestamp
-            RANGE BETWEEN INTERVAL '15 minutes' PRECEDING AND INTERVAL '1 microsecond' PRECEDING
-        ), 0) AS user_failed_logins_15m,
-
-        COALESCE(SUM(is_failed_login) OVER (
-            PARTITION BY user_id ORDER BY event_timestamp
-            RANGE BETWEEN INTERVAL '1 hour' PRECEDING AND INTERVAL '1 microsecond' PRECEDING
-        ), 0) AS user_failed_logins_1h
-
-    FROM events
 )
 
-SELECT * FROM windowed
-WHERE transaction_id IS NOT NULL
-{% if is_incremental() %}
-  AND event_timestamp > (SELECT MAX(event_timestamp) FROM {{ this }})
-{% endif %}
+SELECT
+    transaction_id,
+    user_id,
+    event_timestamp,
+
+    sum(is_failed_login) OVER ({{ rolling_window('user_id', 'MINUTE', 15) }})   AS user_failed_logins_15m,
+    sum(is_failed_login) OVER ({{ rolling_window('user_id', 'HOUR',    1) }})   AS user_failed_logins_1h
+
+FROM events
+WHERE transaction_id != ''
+
