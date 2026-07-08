@@ -1,0 +1,42 @@
+# Single-instance Redis for dev. No persistence (Redis is a cache; docker-compose
+# also runs without persistence). Prod overlay adds AOF + PVC + Sentinel later.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fraud-redis
+  namespace: data-plane
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: fraud-redis
+  template:
+    metadata:
+      labels:
+        app: fraud-redis
+    spec:
+      containers:
+        - name: redis
+          image: redis:7.4-alpine
+          ports:
+            - containerPort: 6379
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fraud-redis
+  namespace: data-plane
+spec:
+  selector:
+    app: fraud-redis
+  ports:
+    - port: 6379
+      targetPort: 6379

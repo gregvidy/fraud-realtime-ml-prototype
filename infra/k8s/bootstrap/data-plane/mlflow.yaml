@@ -1,0 +1,86 @@
+# MLflow tracking server backed by Postgres (fraud-db) + local PVC for artifacts.
+# Prod overlay switches artifacts to managed S3.
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mlflow-artifacts
+  namespace: data-plane
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mlflow
+  namespace: data-plane
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mlflow
+  template:
+    metadata:
+      labels:
+        app: mlflow
+    spec:
+      containers:
+        - name: mlflow
+          image: ghcr.io/mlflow/mlflow:v2.14.1
+          # official mlflow image ships without a Postgres driver;
+          # install psycopg2-binary at startup (~1MB, ~5s), then exec the server.
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              pip install --no-cache-dir --quiet psycopg2-binary==2.9.9
+              exec mlflow server \
+                --host=0.0.0.0 --port=5000 \
+                --backend-store-uri="$BACKEND_STORE_URI" \
+                --default-artifact-root=/mlflow/artifacts \
+                --serve-artifacts
+          env:
+            - name: PGUSER
+              valueFrom:
+                secretKeyRef:
+                  name: fraud-db-app
+                  key: username
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: fraud-db-app
+                  key: password
+            - name: BACKEND_STORE_URI
+              value: postgresql://$(PGUSER):$(PGPASSWORD)@fraud-db-rw.data-plane.svc.cluster.local:5432/fraud_db
+          ports:
+            - containerPort: 5000
+              name: http
+          resources:
+            requests:
+              cpu: 100m
+              memory: 400Mi
+            limits:
+              cpu: 1000m
+              memory: 1Gi
+          volumeMounts:
+            - mountPath: /mlflow/artifacts
+              name: artifacts
+      volumes:
+        - name: artifacts
+          persistentVolumeClaim:
+            claimName: mlflow-artifacts
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mlflow
+  namespace: data-plane
+spec:
+  selector:
+    app: mlflow
+  ports:
+    - port: 5000
+      targetPort: http
