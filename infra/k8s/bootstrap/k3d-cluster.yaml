@@ -1,0 +1,20 @@
+apiVersion: k3d.io/v1alpha5
+kind: Simple
+metadata:
+  name: fraud-platform
+servers: 1
+agents: 2
+image: rancher/k3s:v1.30.6-k3s1
+# Mount host CA bundle into all nodes so containerd trusts the same CAs as the WSL host
+# (needed when host is behind a TLS-inspecting proxy such as Zscaler).
+volumes:
+  - volume: /etc/ssl/certs/ca-certificates.crt:/etc/ssl/certs/ca-certificates.crt:ro
+    nodeFilters:
+      - all
+options:
+  k3d:
+    wait: true
+    timeout: "300s"
+  kubeconfig:
+    updateDefaultKubeconfig: true
+    switchCurrentContext: true

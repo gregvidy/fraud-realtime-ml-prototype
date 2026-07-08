@@ -1,4 +1,4 @@
-.PHONY: help setup infra-up infra-down seed-data reseed-data append-data _truncate-raw dbt-run feast-apply materialize train train-only train-isolated train-only-isolated start-api start-api-dev stop-api stream-events score-test load-test load-test-ui clean export-to-duckdb offline-pipeline migrate-db mlflow-ui promote-model alias-model list-models docker-stats push-artifacts deploy-aws deploy-push deploy-init deploy-stop deploy-start deploy-terminate deploy-local deploy-local-down train-docker train-docker-watch stream-docker stream-docker-stop ssm-setup ssm-shell ssm-tunnel ssm-tunnel-mlflow ssm-tunnel-locust start-remote-locust
+.PHONY: help setup infra-up infra-down seed-data reseed-data append-data _truncate-raw dbt-run feast-apply materialize train train-only train-isolated train-only-isolated start-api start-api-dev stop-api stream-events score-test load-test load-test-ui clean export-to-duckdb offline-pipeline migrate-db mlflow-ui promote-model alias-model list-models docker-stats push-artifacts deploy-aws deploy-push deploy-init deploy-stop deploy-start deploy-terminate deploy-local deploy-local-down train-docker train-docker-watch stream-docker stream-docker-stop ssm-setup ssm-shell ssm-tunnel ssm-tunnel-mlflow ssm-tunnel-locust start-remote-locust cluster-up cluster-down cluster-status argocd-password argocd-ui
 
 CONDA_ENV := fraud-realtime-ml
 CONDA_PREFIX := $(shell conda info --base)/envs/$(CONDA_ENV)
@@ -430,3 +430,58 @@ stream-docker:
 stream-docker-stop:
 	docker compose -f deploy/docker-compose.prod.yml --profile simulator stop simulator
 	@echo "[DOCKER] Simulator stopped."
+
+# ============================================================================
+# Slice A1 — k8s substrate + GitOps (k3d + ArgoCD)
+# ============================================================================
+K3D_CLUSTER_NAME := fraud-platform
+K3D_CONFIG := infra/k8s/bootstrap/k3d-cluster.yaml
+ARGOCD_VERSION := v2.13.0
+ARGOCD_MANIFEST := infra/k8s/bootstrap/argocd/install.yaml
+ROOT_APP := infra/k8s/apps/dev/root-app.yaml
+
+cluster-up:
+	@command -v k3d >/dev/null || { echo "k3d not installed"; exit 1; }
+	@command -v kubectl >/dev/null || { echo "kubectl not installed"; exit 1; }
+	@if k3d cluster list -o json 2>/dev/null | grep -q '"name": *"$(K3D_CLUSTER_NAME)"'; then \
+		echo "[k3d] Cluster $(K3D_CLUSTER_NAME) exists — skipping create"; \
+	else \
+		echo "[k3d] Creating cluster from $(K3D_CONFIG)..."; \
+		k3d cluster create --config $(K3D_CONFIG); \
+	fi
+	@echo "[k8s] Waiting for nodes Ready..."
+	@kubectl wait --for=condition=Ready nodes --all --timeout=120s
+	@echo "[argocd] Installing $(ARGOCD_VERSION) from vendored manifest..."
+	@kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
+	@kubectl apply -n argocd -f $(ARGOCD_MANIFEST) >/dev/null
+	@echo "[argocd] Waiting for deployments Available..."
+	@kubectl -n argocd wait --for=condition=Available deployment --all --timeout=300s
+	@echo "[gitops] Applying root Application..."
+	@kubectl apply -f $(ROOT_APP)
+	@echo ""
+	@echo "==== cluster-up complete ===="
+	@$(MAKE) --no-print-directory cluster-status
+	@echo ""
+	@echo "Next: 'make argocd-password' to get admin password, 'make argocd-ui' to open UI"
+
+cluster-down:
+	@k3d cluster delete $(K3D_CLUSTER_NAME) 2>/dev/null || echo "[k3d] Cluster $(K3D_CLUSTER_NAME) not present"
+
+cluster-status:
+	@echo "-- Nodes --"
+	@kubectl get nodes 2>/dev/null || echo "(no cluster)"
+	@echo "-- ArgoCD pods --"
+	@kubectl -n argocd get pods 2>/dev/null || echo "(argocd not installed)"
+	@echo "-- ArgoCD Applications --"
+	@kubectl -n argocd get applications 2>/dev/null || true
+	@echo "-- Deployments (default ns) --"
+	@kubectl get deployments 2>/dev/null || true
+
+argocd-password:
+	@kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" 2>/dev/null | base64 -d && echo
+
+argocd-ui:
+	@echo "ArgoCD UI: https://localhost:8080  (accept self-signed cert)"
+	@echo "  user: admin"
+	@echo "  pass: run 'make argocd-password' in another terminal"
+	@kubectl -n argocd port-forward svc/argocd-server 8080:443
