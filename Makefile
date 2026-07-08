@@ -1,4 +1,4 @@
-.PHONY: help setup infra-up infra-down seed-data reseed-data append-data _truncate-raw dbt-run feast-apply materialize train train-only train-isolated train-only-isolated start-api start-api-dev stop-api stream-events stream-producer stream-consumer score-test load-test load-test-ui clean export-to-clickhouse offline-pipeline migrate-db mlflow-ui promote-model alias-model list-models docker-stats push-artifacts deploy-aws deploy-push deploy-init deploy-stop deploy-start deploy-terminate deploy-local deploy-local-down train-docker train-docker-watch stream-docker stream-docker-stop ssm-setup ssm-shell ssm-tunnel ssm-tunnel-mlflow ssm-tunnel-locust start-remote-locust ch-up ch-down ch-logs ch-status ch-shell ch-verify-rbac stream-up stream-down stream-topics stream-schemas stream-schemas-list stream-status stream-logs stream-console stream-ch-apply stream-ch-status stream-ch-lag stream-ch-drop outbox-migrate outbox-relay outbox-produce outbox-status stream-ch-fallback-test cluster-up cluster-down cluster-status argocd-password argocd-ui kubeflow-up kubeflow-down kubeflow-status kubeflow-ui dp-up dp-down dp-status pg-shell mlflow-k8s-ui
+.PHONY: help setup infra-up infra-down seed-data reseed-data append-data _truncate-raw dbt-run feast-apply materialize train train-only train-isolated train-only-isolated start-api start-api-dev stop-api stream-events stream-producer stream-consumer score-test load-test load-test-ui clean export-to-clickhouse offline-pipeline migrate-db mlflow-ui promote-model alias-model list-models docker-stats push-artifacts deploy-aws deploy-push deploy-init deploy-stop deploy-start deploy-terminate deploy-local deploy-local-down train-docker train-docker-watch stream-docker stream-docker-stop ssm-setup ssm-shell ssm-tunnel ssm-tunnel-mlflow ssm-tunnel-locust start-remote-locust ch-up ch-down ch-logs ch-status ch-shell ch-verify-rbac stream-up stream-down stream-topics stream-schemas stream-schemas-list stream-status stream-logs stream-console stream-ch-apply stream-ch-status stream-ch-lag stream-ch-drop outbox-migrate outbox-relay outbox-produce outbox-status stream-ch-fallback-test cluster-up cluster-down cluster-status argocd-password argocd-ui kubeflow-up kubeflow-down kubeflow-status kubeflow-ui dp-up dp-down dp-status pg-shell mlflow-k8s-ui stream-k8s-up stream-k8s-down stream-k8s-status stream-k8s-console-ui stream-k8s-rpk
 
 CONDA_ENV := fraud-realtime-ml
 CONDA_PREFIX := $(shell conda info --base)/envs/$(CONDA_ENV)
@@ -819,3 +819,39 @@ pg-shell:
 mlflow-k8s-ui:
 	@echo "MLflow (k8s) UI: http://localhost:5001"
 	@kubectl -n data-plane port-forward svc/mlflow 5001:5000
+
+# ============================================================================
+# Slice A3b — streaming plane (Redpanda + Schema Registry + Console)
+# ============================================================================
+STREAM_INSTALL := infra/k8s/bootstrap/streaming/install.sh
+
+stream-k8s-up:
+	@command -v helm >/dev/null || { echo "helm not installed"; exit 1; }
+	bash $(STREAM_INSTALL)
+	@echo ""
+	@echo "==== stream-k8s-up complete ===="
+	@$(MAKE) --no-print-directory stream-k8s-status
+
+stream-k8s-down:
+	@kubectl -n data-plane delete job redpanda-topics-bootstrap redpanda-schemas-bootstrap --ignore-not-found || true
+	@kubectl -n data-plane delete configmap redpanda-schemas --ignore-not-found || true
+	@helm uninstall redpanda -n data-plane 2>/dev/null || true
+
+stream-k8s-status:
+	@echo "-- redpanda pods --"
+	@kubectl -n data-plane get pods -l app.kubernetes.io/name=redpanda 2>/dev/null | tail -n +2 || echo "  (not installed)"
+	@kubectl -n data-plane get pods -l app.kubernetes.io/name=console 2>/dev/null | tail -n +2 || true
+	@echo "-- redpanda services --"
+	@kubectl -n data-plane get svc -l app.kubernetes.io/name=redpanda 2>/dev/null | tail -n +2 || true
+	@echo "-- topics --"
+	@kubectl -n data-plane exec redpanda-0 -c redpanda -- rpk topic list 2>/dev/null || echo "  (broker not ready)"
+	@echo "-- schema subjects --"
+	@kubectl -n data-plane exec redpanda-0 -c redpanda -- curl -sSf http://localhost:8081/subjects 2>/dev/null || echo "  (SR not ready)"
+	@echo
+
+stream-k8s-console-ui:
+	@echo "Redpanda Console: http://localhost:8080"
+	@kubectl -n data-plane port-forward svc/redpanda-console 8080:8080
+
+stream-k8s-rpk:
+	@kubectl -n data-plane exec -it redpanda-0 -c redpanda -- rpk cluster info

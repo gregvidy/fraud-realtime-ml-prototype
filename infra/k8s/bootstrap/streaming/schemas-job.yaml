@@ -1,0 +1,58 @@
+# k8s Job: registers 3 Avro schemas as 8 subjects with Schema Registry.
+# Subject mapping (matches Slice 6 convention):
+#   TxnEvent       → 6 subjects (txn.raw.{visa,mastercard,amex,qris,debit,digital}-value)
+#   ScoredTxnEvent → 1 subject  (txn.scored-value)
+#   LoginEvent     → 1 subject  (login.events-value)
+#
+# Reads the .avsc files from a ConfigMap `redpanda-schemas` which is created
+# at install time via `kubectl create configmap --from-file=streaming/schemas/`.
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: redpanda-schemas-bootstrap
+  namespace: data-plane
+spec:
+  backoffLimit: 5
+  ttlSecondsAfterFinished: 3600
+  template:
+    spec:
+      restartPolicy: OnFailure
+      volumes:
+        - name: schemas
+          configMap:
+            name: redpanda-schemas
+      containers:
+        - name: register
+          image: alpine:3.20
+          env:
+            - name: SR_URL
+              value: "http://redpanda.data-plane.svc.cluster.local:8081"
+          volumeMounts:
+            - name: schemas
+              mountPath: /schemas
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              apk add --no-cache curl jq >/dev/null
+              register() {
+                  local subject="$1"; local avsc_path="$2"
+                  echo "── register subject: $subject ──"
+                  payload=$(jq -Rs '{schema: .}' < "$avsc_path")
+                  curl -sSf -X POST \
+                      -H "Content-Type: application/vnd.schemaregistry.v1+json" \
+                      -d "$payload" \
+                      "${SR_URL}/subjects/${subject}/versions" | head -c 200
+                  echo
+              }
+              # 6 raw txn channels share the TxnEvent schema
+              for ch in visa mastercard amex qris debit digital; do
+                  register "txn.raw.${ch}-value" /schemas/TxnEvent.avsc
+              done
+              register "txn.scored-value"   /schemas/ScoredTxnEvent.avsc
+              register "login.events-value" /schemas/LoginEvent.avsc
+
+              echo "── final subject list ──"
+              curl -sSf "${SR_URL}/subjects"
+              echo
