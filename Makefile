@@ -1,4 +1,4 @@
-.PHONY: help setup infra-up infra-down seed-data reseed-data append-data _truncate-raw dbt-run feast-apply materialize train train-only train-isolated train-only-isolated start-api start-api-dev stop-api stream-events stream-producer stream-consumer score-test load-test load-test-ui clean export-to-clickhouse offline-pipeline migrate-db mlflow-ui promote-model alias-model list-models docker-stats push-artifacts deploy-aws deploy-push deploy-init deploy-stop deploy-start deploy-terminate deploy-local deploy-local-down train-docker train-docker-watch stream-docker stream-docker-stop ssm-setup ssm-shell ssm-tunnel ssm-tunnel-mlflow ssm-tunnel-locust start-remote-locust ch-up ch-down ch-logs ch-status ch-shell ch-verify-rbac stream-up stream-down stream-topics stream-schemas stream-schemas-list stream-status stream-logs stream-console stream-ch-apply stream-ch-status stream-ch-lag stream-ch-drop outbox-migrate outbox-relay outbox-produce outbox-status stream-ch-fallback-test cluster-up cluster-down cluster-status argocd-password argocd-ui
+.PHONY: help setup infra-up infra-down seed-data reseed-data append-data _truncate-raw dbt-run feast-apply materialize train train-only train-isolated train-only-isolated start-api start-api-dev stop-api stream-events stream-producer stream-consumer score-test load-test load-test-ui clean export-to-clickhouse offline-pipeline migrate-db mlflow-ui promote-model alias-model list-models docker-stats push-artifacts deploy-aws deploy-push deploy-init deploy-stop deploy-start deploy-terminate deploy-local deploy-local-down train-docker train-docker-watch stream-docker stream-docker-stop ssm-setup ssm-shell ssm-tunnel ssm-tunnel-mlflow ssm-tunnel-locust start-remote-locust ch-up ch-down ch-logs ch-status ch-shell ch-verify-rbac stream-up stream-down stream-topics stream-schemas stream-schemas-list stream-status stream-logs stream-console stream-ch-apply stream-ch-status stream-ch-lag stream-ch-drop outbox-migrate outbox-relay outbox-produce outbox-status stream-ch-fallback-test cluster-up cluster-down cluster-status argocd-password argocd-ui kubeflow-up kubeflow-down kubeflow-status kubeflow-ui
 
 CONDA_ENV := fraud-realtime-ml
 CONDA_PREFIX := $(shell conda info --base)/envs/$(CONDA_ENV)
@@ -741,3 +741,44 @@ argocd-ui:
 	@echo "  user: admin"
 	@echo "  pass: run 'make argocd-password' in another terminal"
 	@kubectl -n argocd port-forward svc/argocd-server 8080:443
+
+# ============================================================================
+# Slice A2 — Kubeflow standalone (KFP + Katib + KServe + Training Operator)
+# ============================================================================
+KUBEFLOW_VERSION ?= v1.10.0
+KUBEFLOW_INSTALL := infra/k8s/bootstrap/kubeflow/install.sh
+
+kubeflow-up:
+	@command -v kustomize >/dev/null || { echo "kustomize not installed (need v5.x)"; exit 1; }
+	@command -v kubectl >/dev/null || { echo "kubectl not installed"; exit 1; }
+	KUBEFLOW_VERSION=$(KUBEFLOW_VERSION) bash $(KUBEFLOW_INSTALL)
+	@echo ""
+	@echo "==== kubeflow-up complete ===="
+	@$(MAKE) --no-print-directory kubeflow-status
+	@echo ""
+	@echo "Next: 'make kubeflow-ui' to reach the Central Dashboard"
+
+kubeflow-down:
+	@kubectl delete namespace kubeflow --ignore-not-found --timeout=300s || true
+	@kubectl delete namespace istio-system --ignore-not-found --timeout=300s || true
+	@kubectl delete namespace auth --ignore-not-found --timeout=300s || true
+	@kubectl delete namespace cert-manager --ignore-not-found --timeout=300s || true
+	@kubectl delete namespace knative-serving --ignore-not-found --timeout=300s || true
+	@kubectl delete namespace kubeflow-user-example-com --ignore-not-found --timeout=300s || true
+	@kubectl delete namespace oauth2-proxy --ignore-not-found --timeout=300s || true
+
+kubeflow-status:
+	@echo "-- CRDs (Kubeflow / KServe / Katib / Training-op) --"
+	@kubectl get crd 2>/dev/null | grep -E "(kubeflow.org|kserve.io|katib|serving.kserve)" | awk '{print $$1}' | head -20
+	@echo "-- Deployments in kubeflow ns --"
+	@kubectl -n kubeflow get deployments 2>/dev/null | tail -n +2 | awk '{printf "  %-45s %s\n", $$1, $$4}'
+	@echo "-- Non-Running pods in kubeflow ns --"
+	@kubectl -n kubeflow get pods --field-selector=status.phase!=Running 2>/dev/null | tail -n +2 | head -10 || echo "  (all Running)"
+	@echo "-- istio-ingressgateway --"
+	@kubectl -n istio-system get svc istio-ingressgateway 2>/dev/null | tail -n +2 || echo "  (not installed)"
+
+kubeflow-ui:
+	@echo "Kubeflow Central Dashboard: http://localhost:8080"
+	@echo "  user: user@example.com"
+	@echo "  pass: 12341234"
+	@kubectl -n istio-system port-forward svc/istio-ingressgateway 8080:80
