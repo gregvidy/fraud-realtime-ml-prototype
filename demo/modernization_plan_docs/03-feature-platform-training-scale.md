@@ -3,14 +3,14 @@
 > **Duration**: 6-8 weeks
 > **Merged from**: Phase 4 (Feature DSL/Registry) + Phase 5 (Distributed Training)
 > **Goal**: Unified feature governance, distributed training on 100M+ rows, multi-model sweeps
-> **Prerequisite**: Phase 2 complete (streaming pipeline, ScyllaDB operational)
+> **Prerequisite**: Phase 2 complete (transactional outbox → Redpanda; ClickHouse Kafka Engine + MVs; Redis Cluster with cold fallback)
 
 ---
 
 ## 3.1 What This Phase Delivers
 
 By the end of Phase 3, FraudML has:
-- **Feature Registry (Feast-lite DSL)**: YAML-defined features linked to batch (dbt), streaming (ksqlDB), and request-time sources
+- **Feature Registry (Feast-lite DSL)**: YAML-defined features linked to batch (dbt on ClickHouse), streaming (Redpanda topics + Redis sorted sets + ClickHouse MVs), and request-time sources
 - **Training-serving consistency**: Features defined once, computed identically for training and serving
 - **Distributed training via Ray**: Train on 100M+ rows across multiple workers
 - **Multi-model sweeps**: Train LightGBM + XGBoost + RF in a single config-driven run
@@ -34,9 +34,10 @@ By the end of Phase 3, FraudML has:
 │  │  └─ request_features.yaml  (3 features: amount, is_intl, local_hour)│   │
 │  │                                                                      │   │
 │  │  Links to:                                                            │   │
-│  │  ├─ dbt models (batch computation)                                   │   │
-│  │  ├─ ksqlDB queries (streaming computation)                           │   │
-│  │  └─ Request payload fields (request-time)                            │   │
+│  │  ├─ dbt models on ClickHouse (batch computation)                       │   │
+│  │  ├─ Redpanda topics + Redis sorted sets (streaming, at read time)     │   │
+│  │  ├─ ClickHouse Materialized Views (streaming, server-side aggregates) │   │
+│  │  └─ Request payload fields (request-time)                              │   │
 │  │                                                                      │   │
 │  │  Serves:                                                              │   │
 │  │  ├─ Scoring: feature vector assembly (ordered by registry)           │   │
@@ -80,11 +81,11 @@ By the end of Phase 3, FraudML has:
 |------|-------------|------|
 | **YAML DSL design** | Define feature definition schema (see below). Support: batch, streaming, request-time modes. | 2 |
 | **Feature registry service** | Python module that loads YAML definitions. Provides: `get_feature_vector(entity_ids)`, `get_training_features(model_id)`, `get_feature_metadata(feature_name)`. | 4 |
-| **Link to dbt models** | Each batch feature references a dbt model + column. Registry validates that dbt model exists. | 2 |
-| **Link to ksqlDB** | Each streaming feature references a ksqlDB table. Registry validates connectivity. | 2 |
+| **Link to dbt models** | Each batch feature references a dbt model + column. Registry validates that dbt model exists in ClickHouse. | 2 |
+| **Link to streaming sources** | Each streaming feature references a Redpanda topic + Redis key template (hot path) and/or a ClickHouse Materialized View (analytics + cold fallback). Registry validates topic exists in Schema Registry, Redis key format matches `online_features/redis_keys.py`, and the ClickHouse MV is present. | 2 |
 | **Link to request payload** | Request-time features mapped to JSON path in scoring request. | 0.5 |
 | **Feature versioning** | Git-tracked YAML files. Version bumps on schema changes. Backward-compatible loading. | 1 |
-| **Training dataset builder** | Build training dataset from registry: query ClickHouse for batch features + join historical streaming features. Point-in-time correct. | 5 |
+| **Training dataset builder** | Build training dataset from registry: query ClickHouse for batch features + reconstruct historical streaming features from `main.transactions` using the same window logic. Point-in-time correct. | 5 |
 | **Scoring integration** | Scoring service reads feature order from registry. Assembles vector in registry-defined order. | 2 |
 | **CLI tool** | `fraudml features list`, `fraudml features validate`, `fraudml features describe <name>`. | 2 |
 
@@ -117,7 +118,7 @@ feature_group:
   version: 1
 
 features:
-  # --- Batch features (from dbt → ClickHouse → ScyllaDB/Redis) ---
+  # --- Batch features (dbt on ClickHouse → Feast → Redis Cluster) ---
   - name: user_account_age_days
     dtype: int
     mode: batch
@@ -150,13 +151,17 @@ features:
     description: "Total transaction amount in last 30 days"
     default: 0.0
 
-  # --- Streaming features (from ksqlDB → Kafka → Redis/ScyllaDB) ---
+  # --- Streaming features (Redpanda → Redis sorted sets at read time; ClickHouse MVs for analytics + cold fallback) ---
   - name: user_txn_count_5m
     dtype: int
     mode: streaming
     source:
-      ksqldb_table: user_txn_count_5m
-      column: txn_count_5m
+      redis_key_template: "fraud:user:{user_id}:txn_ts"
+      redis_op: ZCOUNT
+      window: 5m
+      # cold-fallback / analytics source (used when Redis is unavailable or for training reconstruction)
+      clickhouse_mv: main.mv_user_velocity_5m
+      clickhouse_measure: countMerge(txn_count_state)
     window: 5m
     description: "Transaction count in last 5 minutes"
     default: 0
@@ -168,8 +173,11 @@ features:
     dtype: float
     mode: streaming
     source:
-      ksqldb_table: user_txn_count_5m
-      column: txn_amount_5m
+      redis_key_template: "fraud:user:{user_id}:txn_ts"
+      redis_op: ZRANGEBYSCORE_SUM   # amount is second field of the ZSET member
+      window: 5m
+      clickhouse_mv: main.mv_user_velocity_5m
+      clickhouse_measure: sumMerge(txn_amount_state)
     window: 5m
     description: "Total transaction amount in last 5 minutes"
     default: 0.0
@@ -178,8 +186,11 @@ features:
     dtype: int
     mode: streaming
     source:
-      ksqldb_table: user_txn_count_1h
-      column: distinct_merchants_1h
+      redis_key_template: "fraud:user:{user_id}:merchant_ts"
+      redis_op: ZCARD_WINDOWED
+      window: 1h
+      clickhouse_mv: main.mv_user_velocity_1h
+      clickhouse_measure: uniqExactMerge(distinct_merchants_state)
     window: 1h
     description: "Distinct merchants in last 1 hour"
     default: 0
@@ -188,8 +199,11 @@ features:
     dtype: int
     mode: streaming
     source:
-      ksqldb_table: user_failed_logins_15m
-      column: failed_logins_15m
+      redis_key_template: "fraud:user:{user_id}:login_fail_ts"
+      redis_op: ZCOUNT
+      window: 15m
+      clickhouse_mv: main.mv_user_login_15m
+      clickhouse_measure: countMerge(fail_count_state)
     window: 15m
     description: "Failed login attempts in last 15 minutes"
     default: 0
@@ -280,7 +294,7 @@ dataset:
   source: clickhouse
   query: "SELECT * FROM fraudml.fct_training_dataset"
   feature_registry: "feature_definitions/"  # use registry for feature list
-  streaming_features: true  # include streaming features from ksqlDB history
+  streaming_features: true  # reconstruct streaming features from main.transactions using the registry's window logic
 
 split:
   method: temporal
@@ -421,8 +435,8 @@ The most critical correctness requirement: **features seen during training must 
 
 | Feature Mode | Training Source | Serving Source | Consistency Mechanism |
 |-------------|---------------|---------------|----------------------|
-| **Batch** | ClickHouse (dbt model) | ScyllaDB / Redis (Feast materialized) | Same dbt SQL computes both. Feast materializes from dbt output. |
-| **Streaming** | ClickHouse (historical ksqlDB output, backfilled) | Redis / ScyllaDB (live ksqlDB output) | ksqlDB query logic is canonical. Historical backfill replays Kafka topics through same queries. |
+| **Batch** | ClickHouse (dbt model) | Redis Cluster (Feast materialized) | Same dbt SQL computes both. Feast materializes from dbt output. Cold fallback: `main.mv_latest_features FINAL`. |
+| **Streaming** | ClickHouse `main.transactions` (historical raw events replayed through the registry's window logic) | Redis sorted sets (live velocity, at read time) + ClickHouse MVs (cold fallback) | Registry defines a single window spec (e.g. `5m`, `ZCOUNT`). Training-time replay and serving-time read both consume it. |
 | **Request-time** | ClickHouse (raw transaction column) | HTTP request JSON field | Feature registry maps both to same semantic field. |
 
 #### Consistency Validation
@@ -509,6 +523,6 @@ def validate_feature_consistency(registry, sample_size=1000):
 |------|--------|-----------|
 | Ray adds infrastructure complexity | Harder to deploy on-prem | Ray can run in "local mode" (single node) for small datasets. Only enable cluster mode for 100M+. |
 | ClickHouse Arrow streaming memory | Large Arrow batches consume RAM | Tune `max_block_size` to 500K-1M. Monitor worker RSS. |
-| Feature registry becomes stale | Definitions drift from actual computation | CI/CD: `fraudml features validate` in pipeline. Blocks deploy if dbt model or ksqlDB query is missing. |
+| Feature registry becomes stale | Definitions drift from actual computation | CI/CD: `fraudml features validate` in pipeline. Blocks deploy if dbt model, Redpanda topic, or ClickHouse MV referenced by the registry is missing. |
 | Multi-model sweep takes too long | Blocks training pipeline for hours | Limit concurrent trials. Use early stopping aggressively. Cancel unpromising trials via Ray Tune scheduler (ASHAScheduler). |
-| Historical streaming features unavailable | Training dataset missing real-time features for old transactions | Backfill: replay Kafka topics through ksqlDB for historical period. Or: use dbt to compute approximate streaming features from batch data (same window logic in SQL). |
+| Historical streaming features unavailable | Training dataset missing real-time features for old transactions | Reconstruction: replay `main.transactions` through the registry's window spec in ClickHouse (same `countIf` / `sumIf` window logic as the online path). Uses `main.mv_user_velocity_*` when available, falls back to on-the-fly aggregation over raw events for cold periods. |

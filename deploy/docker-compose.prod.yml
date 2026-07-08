@@ -142,7 +142,7 @@ services:
       - ../models:/app/models
       - ../mlruns:/app/mlruns
       - ../mlflow.db:/app/mlflow.db
-      - ../data/duckdb:/app/data/duckdb
+      - ../data/parquet:/app/data/parquet
       - ../training/datasets:/app/training/datasets
     depends_on:
       postgres:

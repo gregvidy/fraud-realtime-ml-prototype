@@ -1,99 +1,89 @@
+{{ config(
+    materialized='table',
+    engine='MergeTree()',
+    order_by='(user_id, event_timestamp, transaction_id)',
+    partition_by='toYYYYMM(event_timestamp)'
+) }}
+
 -- fct_training_dataset.sql
 -- Unified labelled dataset for model training.
 -- Joins all feature tables on transaction_id plus fraud label.
 
-WITH user_feat AS (
-    SELECT * FROM {{ ref('fct_user_features') }}
-),
+WITH user_feat     AS (SELECT * EXCEPT (user_id, event_timestamp) FROM {{ ref('fct_user_features') }}),
+     device_feat   AS (SELECT * EXCEPT (device_id, event_timestamp) FROM {{ ref('fct_device_features') }}),
+     merchant_feat AS (SELECT * EXCEPT (merchant_id, event_timestamp) FROM {{ ref('fct_merchant_features') }}),
+     txns          AS (SELECT * FROM {{ ref('stg_transactions') }}),
+     labels        AS (SELECT transaction_id, is_fraud FROM {{ ref('stg_fraud_labels') }})
 
-device_feat AS (
-    SELECT * FROM {{ ref('fct_device_features') }}
-),
+SELECT
+    t.transaction_id AS transaction_id,
+    t.user_id        AS user_id,
+    t.device_id      AS device_id,
+    t.merchant_id    AS merchant_id,
+    t.event_timestamp AS event_timestamp,
 
-merchant_feat AS (
-    SELECT * FROM {{ ref('fct_merchant_features') }}
-),
+    -- Request-time features
+    t.amount                              AS txn_amount,
+    t.currency,
+    t.payment_method,
+    CAST(t.is_international AS Int32)     AS is_international,
+    t.local_hour,
+    CAST(t.txn_status = 'decline' AS Int32) AS prev_decline_flag,
 
-txns AS (
-    SELECT * FROM {{ ref('stg_transactions') }}
-),
+    -- User features
+    uf.user_account_age_days,
+    uf.user_is_verified,
+    uf.user_is_standard_account,
+    uf.user_txn_count_1d,
+    uf.user_txn_count_7d,
+    uf.user_txn_count_30d,
+    uf.user_txn_amount_sum_1d,
+    uf.user_txn_amount_sum_7d,
+    uf.user_txn_amount_sum_30d,
+    uf.user_avg_ticket_30d,
+    uf.user_distinct_merchants_30d,
+    uf.user_distinct_devices_30d,
+    uf.user_decline_count_7d,
+    uf.user_failed_logins_7d,
+    uf.user_failed_logins_1d,
 
-labels AS (
-    SELECT * FROM {{ ref('stg_fraud_labels') }}
-),
+    -- Device features
+    df.device_distinct_users_30d,
+    df.device_txn_count_7d,
+    df.device_txn_count_1d,
+    df.device_is_shared_flag,
 
-final AS (
-    SELECT
-        t.transaction_id,
-        t.user_id,
-        t.device_id,
-        t.merchant_id,
-        t.event_timestamp,
+    -- Merchant features
+    mf.merchant_is_high_risk,
+    mf.merchant_is_online,
+    mf.merchant_txn_count_30d,
+    mf.merchant_avg_ticket_30d,
+    mf.merchant_fraud_rate_30d,
 
-        -- Request-time features
-        t.amount                                AS txn_amount,
-        t.currency,
-        t.payment_method,
-        t.is_international::INT                 AS is_international,
-        t.local_hour,
-        (t.txn_status = 'decline')::INT         AS prev_decline_flag,
+    -- User online features (from fct_user_features)
+    uf.user_txn_count_5m,
+    uf.user_txn_count_10m,
+    uf.user_txn_count_1h,
+    uf.user_txn_amount_sum_5m,
+    uf.user_txn_amount_sum_10m,
+    uf.user_txn_amount_sum_1h,
+    uf.user_distinct_merchants_5m,
+    uf.user_distinct_merchants_10m,
+    uf.user_distinct_merchants_1h,
+    uf.user_failed_logins_15m,
+    uf.user_failed_logins_1h,
 
-        -- User features
-        uf.user_account_age_days,
-        uf.user_is_verified,
-        uf.user_is_standard_account,
-        uf.user_txn_count_1d,
-        uf.user_txn_count_7d,
-        uf.user_txn_count_30d,
-        uf.user_txn_amount_sum_1d,
-        uf.user_txn_amount_sum_7d,
-        uf.user_txn_amount_sum_30d,
-        uf.user_avg_ticket_30d,
-        uf.user_distinct_merchants_30d,
-        uf.user_distinct_devices_30d,
-        uf.user_decline_count_7d,
-        uf.user_failed_logins_7d,
-        uf.user_failed_logins_1d,
+    -- Device online features (from fct_device_features)
+    df.device_txn_count_5m,
+    df.device_txn_count_10m,
+    df.device_txn_count_1h,
 
-        -- Device features
-        df.device_distinct_users_30d,
-        df.device_txn_count_7d,
-        df.device_txn_count_1d,
-        df.device_is_shared_flag,
+    -- Label
+    CAST(COALESCE(l.is_fraud, 0) AS Int32) AS is_fraud
 
-        -- Merchant features
-        mf.merchant_is_high_risk,
-        mf.merchant_is_online,
-        mf.merchant_txn_count_30d,
-        mf.merchant_avg_ticket_30d,
-        mf.merchant_fraud_rate_30d,
+FROM txns t
+LEFT JOIN user_feat     uf USING (transaction_id)
+LEFT JOIN device_feat   df USING (transaction_id)
+LEFT JOIN merchant_feat mf USING (transaction_id)
+LEFT JOIN labels        l  USING (transaction_id)
 
-        -- User online features (from fct_user_features)
-        uf.user_txn_count_5m,
-        uf.user_txn_count_10m,
-        uf.user_txn_count_1h,
-        uf.user_txn_amount_sum_5m,
-        uf.user_txn_amount_sum_10m,
-        uf.user_txn_amount_sum_1h,
-        uf.user_distinct_merchants_5m,
-        uf.user_distinct_merchants_10m,
-        uf.user_distinct_merchants_1h,
-        uf.user_failed_logins_15m,
-        uf.user_failed_logins_1h,
-
-        -- Device online features (from fct_device_features)
-        df.device_txn_count_5m,
-        df.device_txn_count_10m,
-        df.device_txn_count_1h,
-
-        -- Label
-        COALESCE(l.is_fraud, false)::INT        AS is_fraud
-
-    FROM txns t
-    LEFT JOIN user_feat     uf  ON uf.transaction_id  = t.transaction_id
-    LEFT JOIN device_feat   df  ON df.transaction_id  = t.transaction_id
-    LEFT JOIN merchant_feat mf  ON mf.transaction_id  = t.transaction_id
-    LEFT JOIN labels        l   ON l.transaction_id   = t.transaction_id
-)
-
-SELECT * FROM final

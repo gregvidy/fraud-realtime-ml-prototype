@@ -1,5 +1,6 @@
 -- stg_merchants.sql
 -- One row per merchant.
+{{ config(materialized='table', engine='MergeTree()', order_by='(merchant_id)') }}
 
 SELECT
     merchant_id,
@@ -12,3 +13,4 @@ SELECT
     ingestion_timestamp
 FROM {{ source('raw', 'raw_merchants') }}
 WHERE merchant_id IS NOT NULL
+

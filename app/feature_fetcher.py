@@ -22,6 +22,7 @@ import logging
 
 from cachetools import TTLCache
 
+from .clickhouse_fallback import get_fallback
 from .feast_direct import fetch_offline_features_direct
 from .online_features.retriever import get_all_online_features
 
@@ -88,13 +89,33 @@ async def fetch_offline_features(
         features.update(m_cached)
         return features, True
 
-    # Partial or full cache miss → one pipeline fetch for all three entities
-    features, ok = await fetch_offline_features_direct(user_id, device_id, merchant_id)
+    # Partial or full cache miss → one pipeline fetch for all three entities.
+    # Slice 10: hard-cap the Redis call at 500ms — if Redis is paused/broken
+    # the pipeline await would otherwise hang forever. On timeout we fall
+    # through to the ClickHouse cold-read path below.
+    try:
+        features, ok = await asyncio.wait_for(
+            fetch_offline_features_direct(user_id, device_id, merchant_id),
+            timeout=0.5,
+        )
+    except asyncio.TimeoutError:
+        logger.warning("feature_fetcher: Redis fetch exceeded 500ms — treating as unavailable")
+        features, ok = {}, False
 
     if ok and features:
         _user_cache[user_id]         = {k: v for k, v in features.items() if k in _USER_FEAT_NAMES}
         _device_cache[device_id]     = {k: v for k, v in features.items() if k in _DEVICE_FEAT_NAMES}
         _merchant_cache[merchant_id] = {k: v for k, v in features.items() if k in _MERCHANT_FEAT_NAMES}
+        return features, ok
+
+    # Slice 10: Redis unreachable → cold-read fallback from ClickHouse.
+    # Returns a REDUCED feature set (last_txn_amount, last_txn_local_hour,
+    # last_is_international). Missing model features default to 0 downstream.
+    fallback_features, fallback_ok = await get_fallback().fetch_user_features(user_id)
+    if fallback_ok and fallback_features:
+        # Do NOT populate the per-entity TTL caches from fallback data — those
+        # caches are sized for the Redis-hot path. Fallback is per-call.
+        return fallback_features, False
 
     return features, ok
 
@@ -102,10 +123,12 @@ async def fetch_offline_features(
 async def fetch_online_features(user_id: str, device_id: str) -> tuple[dict, bool]:
     """Retrieve sliding-window features from Redis (async, pipelined)."""
     try:
-        features = await get_all_online_features(user_id, device_id)
+        features = await asyncio.wait_for(
+            get_all_online_features(user_id, device_id), timeout=0.5
+        )
         return features, True
-    except Exception as e:
-        logger.warning("Redis feature retrieval failed: %s", e)
+    except (Exception, asyncio.TimeoutError) as e:
+        logger.warning("Redis online-feature retrieval failed: %s", e)
         return {}, False
 
 

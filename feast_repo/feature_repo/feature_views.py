@@ -7,9 +7,9 @@ Versioning convention: <entity>_batch_fv_v<N>
   - Old versions are kept registered until all consumers have migrated.
 
 Current versions:
-  user_batch_fv_v1     — initial DuckDB-backed offline feature set
-  device_batch_fv_v1   — initial DuckDB-backed offline feature set
-  merchant_batch_fv_v1 — initial DuckDB-backed offline feature set
+  user_batch_fv_v1     — v1 offline feature set (dbt + ClickHouse)
+  device_batch_fv_v1   — v1 offline feature set (dbt + ClickHouse)
+  merchant_batch_fv_v1 — v1 offline feature set (dbt + ClickHouse)
 """
 
 from datetime import timedelta
@@ -61,8 +61,8 @@ user_batch_fv_v1 = FeatureView(
         Field(name="user_failed_logins_1h",        dtype=Int64),
     ],
     source=user_features_source,
-    description="v1: Rolling window user-level features from dbt + DuckDB offline pipeline.",
-    tags={"owner": "model_team", "pipeline": "dbt_duckdb", "version": "1"},
+    description="v1: Rolling window user-level features from dbt + ClickHouse offline pipeline.",
+    tags={"owner": "model_team", "pipeline": "dbt_clickhouse", "version": "1"},
 )
 
 # ---------------------------------------------------------------------------
@@ -83,8 +83,8 @@ device_batch_fv_v1 = FeatureView(
         Field(name="device_txn_count_1h",       dtype=Int64),
     ],
     source=device_features_source,
-    description="v1: Rolling window device-level features from dbt + DuckDB offline pipeline.",
-    tags={"owner": "model_team", "pipeline": "dbt_duckdb", "version": "1"},
+    description="v1: Rolling window device-level features from dbt + ClickHouse offline pipeline.",
+    tags={"owner": "model_team", "pipeline": "dbt_clickhouse", "version": "1"},
 )
 
 # ---------------------------------------------------------------------------
@@ -102,6 +102,6 @@ merchant_batch_fv_v1 = FeatureView(
         Field(name="merchant_fraud_rate_30d",    dtype=Float64),
     ],
     source=merchant_features_source,
-    description="v1: Rolling window merchant-level features from dbt + DuckDB offline pipeline.",
-    tags={"owner": "model_team", "pipeline": "dbt_duckdb", "version": "1"},
+    description="v1: Rolling window merchant-level features from dbt + ClickHouse offline pipeline.",
+    tags={"owner": "model_team", "pipeline": "dbt_clickhouse", "version": "1"},
 )

@@ -20,7 +20,7 @@ fraud_scoring_v1 = FeatureService(
     ],
     description=(
         "Feature service for fraud scoring v1. "
-        "Combines user, device, and merchant batch features sourced from DuckDB via dbt."
+        "Combines user, device, and merchant batch features sourced from ClickHouse via dbt."
     ),
-    tags={"version": "1", "model": "fraud_xgb_v1", "offline_store": "duckdb"},
+    tags={"version": "1", "model": "fraud_xgb_v1", "offline_store": "clickhouse"},
 )

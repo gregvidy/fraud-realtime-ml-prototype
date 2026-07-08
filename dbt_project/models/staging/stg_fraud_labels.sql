@@ -1,4 +1,5 @@
 -- stg_fraud_labels.sql
+{{ config(materialized='table', engine='MergeTree()', order_by='(transaction_id)') }}
 
 SELECT
     transaction_id,
