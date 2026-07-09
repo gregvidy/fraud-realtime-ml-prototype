@@ -106,6 +106,11 @@ def test_env_vars_wire_mlflow_and_feature_registry(experiment):
     env = {e["name"]: e["value"] for e in container["env"]}
     assert env["MLFLOW_TRACKING_URI"] == "http://mlflow.data-plane.svc.cluster.local:5000"
     assert env["FRAUDML_FEATURE_DEFS"] == "/app/feature_definitions"
+    # B5c: trials fetch training data from MinIO.
+    assert env["TRAINING_DATA_URI"].startswith("s3://")
+    assert env["AWS_ENDPOINT_URL_S3"] == "http://minio.data-plane.svc.cluster.local:9000"
+    for aws_var in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_REGION"):
+        assert aws_var in env, f"missing {aws_var}"
 
 
 def test_stdout_regex_matches_actual_training_output(experiment):
@@ -211,6 +216,9 @@ def test_xgboost_env_vars_wire_mlflow_and_feature_registry(xgboost_experiment):
     assert env["FRAUDML_FEATURE_DEFS"] == "/app/feature_definitions"
     # Distinct MLflow experiment name so LGBM and XGBoost runs don't collide
     assert env["MLFLOW_EXPERIMENT_NAME"] == "fraudml-xgboost-hpo"
+    # B5c: trials fetch training data from MinIO (same wiring as LGBM).
+    assert env["TRAINING_DATA_URI"].startswith("s3://")
+    assert env["AWS_ENDPOINT_URL_S3"] == "http://minio.data-plane.svc.cluster.local:9000"
 
 
 # ---------------------------------------------------------------------------

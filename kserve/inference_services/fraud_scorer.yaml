@@ -56,8 +56,10 @@ spec:
           # When MLFLOW_MODEL_URI is set, app/model_loader.py downloads the
           # registered model's artifacts from MLflow at startup. MODEL_PATH
           # only kicks in when this env is unset (docker-compose flow).
+          # Registered model name matches training/experiments/lgbm_v1.yaml
+          # (model_registry_name: lgbm_fraud_model).
           - name: MLFLOW_MODEL_URI
-            value: "models:/fraud_model@production"
+            value: "models:/lgbm_fraud_model@production"
           - name: MODEL_PATH
             value: /app/models/fraud_model.pkl
           # In-cluster Redis (data-plane namespace, per A3a).

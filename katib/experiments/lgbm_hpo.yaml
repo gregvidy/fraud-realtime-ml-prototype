@@ -122,6 +122,18 @@ spec:
                     value: /app/feature_definitions
                   - name: MLFLOW_EXPERIMENT_NAME
                     value: fraudml-lgbm-hpo
+                  # B5c: MinIO wiring so trials read training data from S3.
+                  # POC creds — match infra/k8s/bootstrap/data-plane/minio.yaml.
+                  - name: TRAINING_DATA_URI
+                    value: s3://fraudml-data/training/datasets/training_dataset.parquet
+                  - name: AWS_ENDPOINT_URL_S3
+                    value: http://minio.data-plane.svc.cluster.local:9000
+                  - name: AWS_ACCESS_KEY_ID
+                    value: minioadmin
+                  - name: AWS_SECRET_ACCESS_KEY
+                    value: minioadmin
+                  - name: AWS_REGION
+                    value: us-east-1
                 command:
                   - python
                   - -m

@@ -68,7 +68,9 @@ def test_env_wires_model_redis_mlflow_feature_defs(isvc):
 
     # B5a: MLFLOW_MODEL_URI is the primary source; MODEL_PATH is a fallback
     # that only activates when MLFLOW_MODEL_URI is unset.
-    assert env["MLFLOW_MODEL_URI"] == "models:/fraud_model@production"
+    # B5c: registered-model name matches training/experiments/lgbm_v1.yaml's
+    # model_registry_name (lgbm_fraud_model).
+    assert env["MLFLOW_MODEL_URI"] == "models:/lgbm_fraud_model@production"
     assert env["MODEL_PATH"] == "/app/models/fraud_model.pkl"
     assert env["REDIS_HOST"] == "redis.data-plane.svc.cluster.local"
     assert env["REDIS_PORT"] == "6379"
