@@ -1,0 +1,67 @@
+# ============================================================================
+# Device-entity features. 4 batch (dbt fct_device_features) + 2 streaming.
+# ============================================================================
+feature_group:
+  name: device_features
+  entity: device
+  version: 1
+  description: "Device-level features for fraud scoring"
+
+features:
+  # ── Batch ───────────────────────────────────────────────────────────────
+  - name: device_distinct_users_30d
+    dtype: int
+    mode: batch
+    online: true
+    source:
+      dbt_model: fct_device_features
+      column: device_distinct_users_30d
+    default: 0
+
+  - name: device_txn_count_7d
+    dtype: int
+    mode: batch
+    online: true
+    source:
+      dbt_model: fct_device_features
+      column: device_txn_count_7d
+    default: 0
+
+  - name: device_txn_count_1d
+    dtype: int
+    mode: batch
+    online: true
+    source:
+      dbt_model: fct_device_features
+      column: device_txn_count_1d
+    default: 0
+
+  - name: device_is_shared_flag
+    dtype: int
+    mode: batch
+    online: true
+    source:
+      dbt_model: fct_device_features
+      column: device_is_shared_flag
+    default: 0
+
+  # ── Streaming ───────────────────────────────────────────────────────────
+  - name: device_txn_count_5m
+    dtype: int
+    mode: streaming
+    online: true
+    source:
+      redis_key_template: "fraud:device:{device_id}:txn_ts"
+      redis_op: ZCOUNT
+      window: 5m
+    default: 0
+
+  - name: device_txn_count_10m
+    dtype: int
+    mode: streaming
+    online: true
+    source:
+      redis_key_template: "fraud:device:{device_id}:txn_ts"
+      redis_op: ZCOUNT
+      window: 10m
+    default: 0

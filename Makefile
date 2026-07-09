@@ -1,4 +1,4 @@
-.PHONY: help setup infra-up infra-down seed-data reseed-data append-data _truncate-raw dbt-run feast-apply materialize train train-only train-isolated train-only-isolated start-api start-api-dev stop-api stream-events stream-producer stream-consumer score-test load-test load-test-ui clean export-to-clickhouse offline-pipeline migrate-db mlflow-ui promote-model alias-model list-models docker-stats push-artifacts deploy-aws deploy-push deploy-init deploy-stop deploy-start deploy-terminate deploy-local deploy-local-down train-docker train-docker-watch stream-docker stream-docker-stop ssm-setup ssm-shell ssm-tunnel ssm-tunnel-mlflow ssm-tunnel-locust start-remote-locust ch-up ch-down ch-logs ch-status ch-shell ch-verify-rbac stream-up stream-down stream-topics stream-schemas stream-schemas-list stream-status stream-logs stream-console stream-ch-apply stream-ch-status stream-ch-lag stream-ch-drop outbox-migrate outbox-relay outbox-produce outbox-status stream-ch-fallback-test cluster-up cluster-down cluster-status argocd-password argocd-ui kubeflow-up kubeflow-down kubeflow-status kubeflow-ui dp-up dp-down dp-status pg-shell mlflow-k8s-ui stream-k8s-up stream-k8s-down stream-k8s-status stream-k8s-console-ui stream-k8s-rpk ch-k8s-up ch-k8s-down ch-k8s-status ch-k8s-shell ch-k8s-verify-rbac
+.PHONY: help setup infra-up infra-down seed-data reseed-data append-data _truncate-raw dbt-run feast-apply materialize train train-only train-isolated train-only-isolated start-api start-api-dev stop-api stream-events stream-producer stream-consumer score-test load-test load-test-ui clean export-to-clickhouse offline-pipeline migrate-db mlflow-ui promote-model alias-model list-models docker-stats push-artifacts deploy-aws deploy-push deploy-init deploy-stop deploy-start deploy-terminate deploy-local deploy-local-down train-docker train-docker-watch stream-docker stream-docker-stop ssm-setup ssm-shell ssm-tunnel ssm-tunnel-mlflow ssm-tunnel-locust start-remote-locust ch-up ch-down ch-logs ch-status ch-shell ch-verify-rbac stream-up stream-down stream-topics stream-schemas stream-schemas-list stream-status stream-logs stream-console stream-ch-apply stream-ch-status stream-ch-lag stream-ch-drop outbox-migrate outbox-relay outbox-produce outbox-status stream-ch-fallback-test cluster-up cluster-down cluster-status argocd-password argocd-ui kubeflow-up kubeflow-down kubeflow-status kubeflow-ui dp-up dp-down dp-status pg-shell mlflow-k8s-ui stream-k8s-up stream-k8s-down stream-k8s-status stream-k8s-console-ui stream-k8s-rpk ch-k8s-up ch-k8s-down ch-k8s-status ch-k8s-shell ch-k8s-verify-rbac fraudml-list fraudml-validate fraudml-describe fraudml-services fraudml-test
 
 CONDA_ENV := fraud-realtime-ml
 CONDA_PREFIX := $(shell conda info --base)/envs/$(CONDA_ENV)
@@ -898,3 +898,23 @@ ch-k8s-verify-rbac:
 	@kubectl -n data-plane exec -c clickhouse-pod chi-fraud-analytics-fraud-0-0-0 -- clickhouse-client --user service_writer --password sw_pass --query "SELECT 1" && echo "  ✓ service_writer connect ok"
 	@echo "-- bi_dashboard rejected on sandbox (readonly) --"
 	@! kubectl -n data-plane exec -c clickhouse-pod chi-fraud-analytics-fraud-0-0-0 -- clickhouse-client --user bi_dashboard --password bi_pass --query "CREATE TABLE sandbox.forbidden (x Int) ENGINE=Memory" 2>/dev/null && echo "  ✓ bi_dashboard write rejected"
+
+# ============================================================================
+# Slice B1 — Feature Registry (YAML DSL + Python loader/validator/CLI)
+# ============================================================================
+FRAUDML := $(PYTHON) -m fraudml.feature_registry.cli
+
+fraudml-list:
+	@$(FRAUDML) features list $(if $(SERVICE),--service $(SERVICE))
+
+fraudml-validate:
+	@$(FRAUDML) features validate
+
+fraudml-describe:
+	@$(FRAUDML) features describe $(NAME)
+
+fraudml-services:
+	@$(FRAUDML) features services
+
+fraudml-test:
+	@$(CONDA_PREFIX)/bin/pytest tests/test_feature_registry.py -v

@@ -1,0 +1,210 @@
+# ============================================================================
+# User-entity features. 15 batch (dbt fct_user_features) + 5 streaming (Redis).
+# Streaming features read live sorted sets via app/online_features/redis_keys.
+# ============================================================================
+feature_group:
+  name: user_features
+  entity: user
+  version: 1
+  description: "User-level features for fraud scoring"
+
+features:
+  # ── Batch: user profile ─────────────────────────────────────────────────
+  - name: user_account_age_days
+    dtype: int
+    mode: batch
+    online: true
+    source:
+      dbt_model: fct_user_features
+      column: user_account_age_days
+    default: 0
+    description: "Days since account creation"
+
+  - name: user_is_verified
+    dtype: int
+    mode: batch
+    online: true
+    source:
+      dbt_model: fct_user_features
+      column: user_is_verified
+    default: 0
+
+  - name: user_is_standard_account
+    dtype: int
+    mode: batch
+    online: true
+    source:
+      dbt_model: fct_user_features
+      column: user_is_standard_account
+    default: 0
+
+  # ── Batch: transaction velocity ─────────────────────────────────────────
+  - name: user_txn_count_1d
+    dtype: int
+    mode: batch
+    online: true
+    source:
+      dbt_model: fct_user_features
+      column: user_txn_count_1d
+    default: 0
+
+  - name: user_txn_count_7d
+    dtype: int
+    mode: batch
+    online: true
+    source:
+      dbt_model: fct_user_features
+      column: user_txn_count_7d
+    default: 0
+
+  - name: user_txn_count_30d
+    dtype: int
+    mode: batch
+    online: true
+    source:
+      dbt_model: fct_user_features
+      column: user_txn_count_30d
+    default: 0
+
+  - name: user_txn_amount_sum_1d
+    dtype: float
+    mode: batch
+    online: true
+    source:
+      dbt_model: fct_user_features
+      column: user_txn_amount_sum_1d
+    default: 0.0
+
+  - name: user_txn_amount_sum_7d
+    dtype: float
+    mode: batch
+    online: true
+    source:
+      dbt_model: fct_user_features
+      column: user_txn_amount_sum_7d
+    default: 0.0
+
+  - name: user_txn_amount_sum_30d
+    dtype: float
+    mode: batch
+    online: true
+    source:
+      dbt_model: fct_user_features
+      column: user_txn_amount_sum_30d
+    default: 0.0
+
+  - name: user_avg_ticket_30d
+    dtype: float
+    mode: batch
+    online: true
+    source:
+      dbt_model: fct_user_features
+      column: user_avg_ticket_30d
+    default: 0.0
+
+  - name: user_distinct_merchants_30d
+    dtype: int
+    mode: batch
+    online: true
+    source:
+      dbt_model: fct_user_features
+      column: user_distinct_merchants_30d
+    default: 0
+
+  - name: user_distinct_devices_30d
+    dtype: int
+    mode: batch
+    online: true
+    source:
+      dbt_model: fct_user_features
+      column: user_distinct_devices_30d
+    default: 0
+
+  - name: user_decline_count_7d
+    dtype: int
+    mode: batch
+    online: true
+    source:
+      dbt_model: fct_user_features
+      column: user_decline_count_7d
+    default: 0
+
+  # ── Batch: login risk ───────────────────────────────────────────────────
+  - name: user_failed_logins_7d
+    dtype: int
+    mode: batch
+    online: true
+    source:
+      dbt_model: fct_user_features
+      column: user_failed_logins_7d
+    default: 0
+
+  - name: user_failed_logins_1d
+    dtype: int
+    mode: batch
+    online: true
+    source:
+      dbt_model: fct_user_features
+      column: user_failed_logins_1d
+    default: 0
+
+  # ── Streaming: Redis sorted-set windowed counts ─────────────────────────
+  - name: user_txn_count_5m
+    dtype: int
+    mode: streaming
+    online: true
+    source:
+      redis_key_template: "fraud:user:{user_id}:txn_ts"
+      redis_op: ZCOUNT
+      window: 5m
+    default: 0
+
+  - name: user_txn_count_10m
+    dtype: int
+    mode: streaming
+    online: true
+    source:
+      redis_key_template: "fraud:user:{user_id}:txn_ts"
+      redis_op: ZCOUNT
+      window: 10m
+    default: 0
+
+  - name: user_txn_count_1h
+    dtype: int
+    mode: streaming
+    online: true
+    source:
+      redis_key_template: "fraud:user:{user_id}:txn_ts"
+      redis_op: ZCOUNT
+      window: 1h
+    default: 0
+
+  - name: user_txn_amount_sum_10m
+    dtype: float
+    mode: streaming
+    online: true
+    source:
+      redis_key_template: "fraud:user:{user_id}:txn_ts"
+      redis_op: ZRANGEBYSCORE_SUM
+      window: 10m
+    default: 0.0
+
+  - name: user_distinct_merchants_1h
+    dtype: int
+    mode: streaming
+    online: true
+    source:
+      redis_key_template: "fraud:user:{user_id}:merchant_ts"
+      redis_op: ZCARD_WINDOWED
+      window: 1h
+    default: 0
+
+  - name: user_failed_logins_15m
+    dtype: int
+    mode: streaming
+    online: true
+    source:
+      redis_key_template: "fraud:user:{user_id}:login_fail_ts"
+      redis_op: ZCOUNT
+      window: 15m
+    default: 0
