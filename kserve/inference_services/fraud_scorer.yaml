@@ -52,7 +52,12 @@ spec:
           - containerPort: 8000
             protocol: TCP
         env:
-          # Model artifact — baked into the image via deploy/Dockerfile.
+          # Model artifact — B5a: prefer MLflow registry, fall back to MODEL_PATH.
+          # When MLFLOW_MODEL_URI is set, app/model_loader.py downloads the
+          # registered model's artifacts from MLflow at startup. MODEL_PATH
+          # only kicks in when this env is unset (docker-compose flow).
+          - name: MLFLOW_MODEL_URI
+            value: "models:/fraud_model@production"
           - name: MODEL_PATH
             value: /app/models/fraud_model.pkl
           # In-cluster Redis (data-plane namespace, per A3a).
@@ -60,7 +65,7 @@ spec:
             value: redis.data-plane.svc.cluster.local
           - name: REDIS_PORT
             value: "6379"
-          # MLflow tracking (used for prediction logging if enabled).
+          # MLflow tracking (also used by model_loader to fetch registry artifacts).
           - name: MLFLOW_TRACKING_URI
             value: http://mlflow.data-plane.svc.cluster.local:5000
           # Feature registry, populated by B1.
