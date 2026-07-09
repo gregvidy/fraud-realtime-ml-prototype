@@ -1,0 +1,146 @@
+# Katib Experiment — LightGBM HPO for fraud model
+#
+# Random search over 4 LightGBM hyperparameters. Each trial runs
+# `training/katib_trial.py`, which merges HPs into experiments/lgbm_v1.yaml
+# and execs `training/train_model.py`. train_model.py prints
+# `PR-AUC=<float>` which the stdOutMetricsCollector captures.
+#
+# Objective: maximise PR-AUC on the OOT hold-out (fraud is heavily imbalanced;
+# PR-AUC is more sensitive than ROC-AUC for this task).
+#
+# Runtime prerequisites (deferred to Phase C — same list as B2):
+#   - Katib installed in `kubeflow` namespace (already present per A2)
+#   - `fraudml/training:v1` image built AND imported into k3d cluster
+#   - Training data (`training/datasets/training_dataset.parquet`) mounted
+#     into the trial pod via a PVC — currently baked into `data/` inside
+#     the image, which suffices for POC
+#   - MLflow reachable at http://mlflow.data-plane.svc.cluster.local:5000
+#     (already provisioned in A3a)
+#
+# Apply with: make hpo-apply
+# Status:     make hpo-status
+# Delete:     make hpo-delete
+apiVersion: kubeflow.org/v1beta1
+kind: Experiment
+metadata:
+  name: fraudml-lgbm-hpo
+  namespace: kubeflow
+  labels:
+    app: fraudml
+    slice: B3
+spec:
+  # Optimisation target
+  objective:
+    type: maximize
+    goal: 0.60
+    objectiveMetricName: PR-AUC
+    additionalMetricNames:
+      - ROC-AUC
+
+  # Random search — cheap, no assumption of a smooth loss surface.
+  # Bayesian / TPE can be dropped in later without changing trialTemplate.
+  algorithm:
+    algorithmName: random
+
+  # Budget: 12 trials total, up to 2 concurrent. Small enough to fit on
+  # a laptop-scale k3d cluster; large enough to see the surrogate move.
+  parallelTrialCount: 2
+  maxTrialCount: 12
+  maxFailedTrialCount: 3
+
+  # Parameter space
+  parameters:
+    - name: num-leaves
+      parameterType: int
+      feasibleSpace:
+        min: "15"
+        max: "127"
+    - name: learning-rate
+      parameterType: double
+      feasibleSpace:
+        min: "0.01"
+        max: "0.20"
+    - name: n-estimators
+      parameterType: int
+      feasibleSpace:
+        min: "200"
+        max: "800"
+        step: "50"
+    - name: subsample
+      parameterType: double
+      feasibleSpace:
+        min: "0.60"
+        max: "1.00"
+
+  # Katib parses stdout for lines matching this regex. The training script
+  # already emits e.g.
+  #   OOT   metrics (calibrated) → ROC-AUC=0.8712  PR-AUC=0.4732
+  # so no code changes to train_model.py are required.
+  metricsCollectorSpec:
+    collector:
+      kind: StdOut
+    source:
+      filter:
+        metricsFormat:
+          - "(PR-AUC)=([+-]?[0-9]*\\.?[0-9]+)"
+          - "(ROC-AUC)=([+-]?[0-9]*\\.?[0-9]+)"
+
+  # Trial template — a single container running the wrapper. The
+  # trialParameters block maps Katib's search-space names to placeholders
+  # inside the pod spec below.
+  trialTemplate:
+    primaryContainerName: training
+    trialParameters:
+      - name: numLeaves
+        description: LightGBM num_leaves
+        reference: num-leaves
+      - name: learningRate
+        description: LightGBM learning_rate
+        reference: learning-rate
+      - name: nEstimators
+        description: LightGBM n_estimators
+        reference: n-estimators
+      - name: subsample
+        description: LightGBM subsample
+        reference: subsample
+    trialSpec:
+      apiVersion: batch/v1
+      kind: Job
+      spec:
+        backoffLimit: 0
+        template:
+          spec:
+            restartPolicy: Never
+            containers:
+              - name: training
+                image: fraudml/training:v1
+                imagePullPolicy: IfNotPresent
+                env:
+                  - name: MLFLOW_TRACKING_URI
+                    value: http://mlflow.data-plane.svc.cluster.local:5000
+                  - name: FRAUDML_FEATURE_DEFS
+                    value: /app/feature_definitions
+                  - name: MLFLOW_EXPERIMENT_NAME
+                    value: fraudml-lgbm-hpo
+                command:
+                  - python
+                  - -m
+                  - training.katib_trial
+                args:
+                  - --config
+                  - training/experiments/lgbm_v1.yaml
+                  - --set
+                  - model.lightgbm.num_leaves=${trialParameters.numLeaves}
+                  - --set
+                  - model.lightgbm.learning_rate=${trialParameters.learningRate}
+                  - --set
+                  - model.lightgbm.n_estimators=${trialParameters.nEstimators}
+                  - --set
+                  - model.lightgbm.subsample=${trialParameters.subsample}
+                resources:
+                  requests:
+                    cpu: "1"
+                    memory: 2Gi
+                  limits:
+                    cpu: "2"
+                    memory: 4Gi
