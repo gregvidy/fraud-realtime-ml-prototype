@@ -39,12 +39,17 @@ spec:
               register() {
                   local subject="$1"; local avsc_path="$2"
                   echo "── register subject: $subject ──"
-                  payload=$(jq -Rs '{schema: .}' < "$avsc_path")
-                  curl -sSf -X POST \
+                  payload=$(jq -Rs '{schema: ., schemaType: "AVRO"}' < "$avsc_path")
+                  resp=$(curl -sSf -X POST \
                       -H "Content-Type: application/vnd.schemaregistry.v1+json" \
                       -d "$payload" \
-                      "${SR_URL}/subjects/${subject}/versions" | head -c 200
+                      "${SR_URL}/subjects/${subject}/versions")
+                  echo "$resp" | head -c 200
                   echo
+                  curl -sSf -X PUT \
+                      -H "Content-Type: application/vnd.schemaregistry.v1+json" \
+                      -d '{"compatibility":"BACKWARD"}' \
+                      "${SR_URL}/config/${subject}" >/dev/null
               }
               # 6 raw txn channels share the TxnEvent schema
               for ch in visa mastercard amex qris debit digital; do
