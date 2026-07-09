@@ -36,15 +36,22 @@ kubectl -n data-plane create configmap fraud-db-schema \
 log "4/6 apply Postgres Cluster CR + credentials"
 kubectl apply -f "$DIR/postgres.yaml" >/dev/null
 log "    waiting for fraud-db Cluster to reach Ready phase (up to 5m)..."
+ready=false
+phase=""
 for i in $(seq 1 30); do
     phase=$(kubectl -n data-plane get cluster fraud-db -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
     if [[ "$phase" == "Cluster in healthy state" ]]; then
-        log "    ✓ fraud-db Ready"
+        log "    fraud-db is healthy"
+        ready=true
         break
     fi
     log "    poll #$i phase='${phase}'"
     sleep 10
 done
+if [[ "$ready" != "true" ]]; then
+    log "    ERROR: timed out waiting for fraud-db to become healthy (last phase='${phase}')"
+    exit 1
+fi
 
 log "5/6 apply Redis Deployment"
 kubectl apply -f "$DIR/redis.yaml" >/dev/null
