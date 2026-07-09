@@ -16,6 +16,7 @@ Usage:
 
 import argparse
 import json
+import os
 from pathlib import Path
 
 import joblib
@@ -34,6 +35,47 @@ from sklearn.metrics import (
 
 _PROJECT_ROOT = Path(__file__).parent.parent
 DEFAULT_META  = _PROJECT_ROOT / "models" / "model_meta.json"
+
+
+# ---------------------------------------------------------------------------
+# B6: MLflow-model fetch (KFP mode)
+# ---------------------------------------------------------------------------
+
+def _stage_from_mlflow(uri: str) -> Path:
+    """Download the run's artifacts for a registered model version to a temp
+    dir and return the path of the model_meta.json.
+
+    Same convention as app/model_loader.py._stage_from_mlflow but returns the
+    meta path so the existing (unchanged) evaluate flow can pick up model
+    artifacts as its siblings. Mirrors training/train_model.py's artifact
+    layout: pkls under artifacts/, meta under config/.
+    """
+    import shutil
+    import tempfile
+
+    if not uri.startswith("models:/"):
+        raise ValueError(f"MLFLOW_MODEL_URI must start with models:/ — got {uri!r}")
+    rest = uri[len("models:/"):]
+    if "@" in rest:
+        name, ref = rest.split("@", 1)
+        mv = mlflow.MlflowClient().get_model_version_by_alias(name, ref)
+    elif "/" in rest:
+        name, ref = rest.rsplit("/", 1)
+        mv = mlflow.MlflowClient().get_model_version(name, ref)
+    else:
+        raise ValueError(f"MLFLOW_MODEL_URI must be models:/name@alias or models:/name/version — got {uri!r}")
+
+    staging = Path(tempfile.mkdtemp(prefix="mlflow_eval_stage_"))
+    local_dir = Path(mlflow.artifacts.download_artifacts(run_id=mv.run_id, dst_path=str(staging)))
+    print(f"[evaluate] MLflow: resolved {uri} → run_id={mv.run_id} version={mv.version}, staged at {local_dir}")
+
+    artifacts_dir = local_dir / "artifacts"
+    meta_src = local_dir / "config" / "model_meta.json"
+    meta_dst = artifacts_dir / "model_meta.json"
+    if meta_src.exists() and not meta_dst.exists():
+        shutil.copy2(meta_src, meta_dst)
+
+    return meta_dst
 
 
 # ---------------------------------------------------------------------------
@@ -124,6 +166,12 @@ def _reproduce_split(
 # ---------------------------------------------------------------------------
 
 def main(meta_path: Path) -> None:
+    # B6: KFP mode — fetch the just-trained model from MLflow instead of the
+    # local models/ dir (which lives in a different pod's filesystem).
+    mlflow_uri = os.getenv("MLFLOW_MODEL_URI")
+    if mlflow_uri:
+        meta_path = _stage_from_mlflow(mlflow_uri)
+
     meta = json.loads(meta_path.read_text())
 
     output_name       = meta.get("model_name", "fraud_model")
@@ -141,8 +189,14 @@ def main(meta_path: Path) -> None:
     # ------------------------------------------------------------------
     # Load data and reproduce exact split from training
     # ------------------------------------------------------------------
-    raw_path  = meta.get("data_path", "training/datasets/training_dataset.parquet")
-    data_path = Path(raw_path) if Path(raw_path).is_absolute() else _PROJECT_ROOT / raw_path
+    # B6: honour TRAINING_DATA_URI (KFP mode) — reads from MinIO via s3fs.
+    # Falls back to the meta-embedded relative path for docker-compose flow.
+    raw_path  = os.getenv("TRAINING_DATA_URI") or meta.get(
+        "data_path", "training/datasets/training_dataset.parquet"
+    )
+    data_path = raw_path if "://" in raw_path else (
+        Path(raw_path) if Path(raw_path).is_absolute() else _PROJECT_ROOT / raw_path
+    )
     print(f"Loading data from {data_path} ...")
     df = pd.read_parquet(data_path)
 

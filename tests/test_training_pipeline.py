@@ -74,6 +74,21 @@ def test_env_vars_set_on_every_component(tmp_path):
             assert aws_var in env, f"{name}: missing {aws_var}"
 
 
+def test_evaluate_step_fetches_model_from_mlflow(tmp_path):
+    """B6: evaluate needs MLFLOW_MODEL_URI to pull the just-trained model
+    (each KFP step has its own filesystem, so we can't read the pkl locally)."""
+    out = tmp_path / "pipeline.yaml"
+    Compiler().compile(pipeline_func=training_pipeline, package_path=str(out))
+    with open(out) as f:
+        ir = yaml.safe_load(f)
+
+    evaluate_env = {
+        e["name"]: e["value"]
+        for e in ir["deploymentSpec"]["executors"]["exec-evaluate"]["container"].get("env", [])
+    }
+    assert evaluate_env["MLFLOW_MODEL_URI"] == "models:/lgbm_fraud_model@candidate"
+
+
 def test_committed_yaml_matches_current_source(tmp_path):
     """The checked-in fraudml/pipelines/training_pipeline.yaml MUST match a fresh compile.
 

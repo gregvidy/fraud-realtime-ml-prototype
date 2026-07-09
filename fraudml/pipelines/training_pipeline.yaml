@@ -78,6 +78,8 @@ deploymentSpec:
           value: minioadmin
         - name: AWS_REGION
           value: us-east-1
+        - name: MLFLOW_MODEL_URI
+          value: models:/lgbm_fraud_model@candidate
         image: fraudml/training:v1
     exec-train:
       container:

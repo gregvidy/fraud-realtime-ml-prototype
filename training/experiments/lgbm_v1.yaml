@@ -235,4 +235,8 @@ mlflow:
   run_name: null
   register_model: true
   model_registry_name: lgbm_fraud_model
+  # B6: self-alias the just-trained version so the KFP evaluate step can
+  # resolve MLFLOW_MODEL_URI=models:/lgbm_fraud_model@candidate. The final
+  # 'production' alias is set separately by `make promote-latest`.
+  model_alias: candidate
   tags: {}
