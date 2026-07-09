@@ -1,0 +1,16 @@
+# ============================================================================
+# Entities: the "primary keys" that features attach to. Every non-request
+# feature belongs to exactly one entity.
+# ============================================================================
+entities:
+  - name: user
+    join_key: user_id
+    description: "Bank customer / account holder"
+
+  - name: device
+    join_key: device_id
+    description: "Device used for transaction"
+
+  - name: merchant
+    join_key: merchant_id
+    description: "Payment recipient"

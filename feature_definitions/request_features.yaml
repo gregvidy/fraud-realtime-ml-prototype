@@ -1,0 +1,37 @@
+# ============================================================================
+# Request-time features: extracted from the scoring request JSON payload.
+# No entity join; not materialized to any store.
+# ============================================================================
+feature_group:
+  name: request_features
+  entity: null
+  version: 1
+  description: "Transaction-level features extracted from scoring request"
+
+features:
+  - name: txn_amount
+    dtype: float
+    mode: request
+    online: false
+    source:
+      json_path: "$.amount"
+    default: 0.0
+    description: "Transaction amount"
+
+  - name: is_international
+    dtype: int
+    mode: request
+    online: false
+    source:
+      json_path: "$.is_international"
+    default: 0
+    description: "Whether transaction crosses borders (0/1)"
+
+  - name: local_hour
+    dtype: int
+    mode: request
+    online: false
+    source:
+      json_path: "$.local_hour"
+    default: 12
+    description: "Local hour of transaction (0-23)"

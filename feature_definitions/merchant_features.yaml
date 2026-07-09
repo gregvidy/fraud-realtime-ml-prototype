@@ -1,0 +1,54 @@
+# ============================================================================
+# Merchant-entity features. 5 batch (dbt fct_merchant_features), no streaming.
+# ============================================================================
+feature_group:
+  name: merchant_features
+  entity: merchant
+  version: 1
+  description: "Merchant-level features for fraud scoring"
+
+features:
+  - name: merchant_is_high_risk
+    dtype: int
+    mode: batch
+    online: true
+    source:
+      dbt_model: fct_merchant_features
+      column: merchant_is_high_risk
+    default: 0
+
+  - name: merchant_is_online
+    dtype: int
+    mode: batch
+    online: true
+    source:
+      dbt_model: fct_merchant_features
+      column: merchant_is_online
+    default: 0
+
+  - name: merchant_txn_count_30d
+    dtype: int
+    mode: batch
+    online: true
+    source:
+      dbt_model: fct_merchant_features
+      column: merchant_txn_count_30d
+    default: 0
+
+  - name: merchant_avg_ticket_30d
+    dtype: float
+    mode: batch
+    online: true
+    source:
+      dbt_model: fct_merchant_features
+      column: merchant_avg_ticket_30d
+    default: 0.0
+
+  - name: merchant_fraud_rate_30d
+    dtype: float
+    mode: batch
+    online: true
+    source:
+      dbt_model: fct_merchant_features
+      column: merchant_fraud_rate_30d
+    default: 0.0

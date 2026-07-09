@@ -1,0 +1,55 @@
+# ============================================================================
+# Feature services: named ordered collections of features consumed by a model.
+# The `features` list defines the exact input vector order — training and
+# serving must both resolve the same service to produce identical vectors.
+# ============================================================================
+feature_services:
+  # `fraud_v1` mirrors the current training/feature_contract.yaml ordering
+  # exactly, so the B1 diff test passes and Phase C cutover is a drop-in
+  # replacement.
+  - name: fraud_v1
+    version: 1
+    description: "Feature vector for fraud_xgb_v1 / lgbm_v1 / rf_v1 models"
+    features:
+      # Request-time
+      - txn_amount
+      - is_international
+      - local_hour
+      # User batch
+      - user_account_age_days
+      - user_is_verified
+      - user_is_standard_account
+      - user_txn_count_1d
+      - user_txn_count_7d
+      - user_txn_count_30d
+      - user_txn_amount_sum_1d
+      - user_txn_amount_sum_7d
+      - user_txn_amount_sum_30d
+      - user_avg_ticket_30d
+      - user_distinct_merchants_30d
+      - user_distinct_devices_30d
+      - user_decline_count_7d
+      - user_failed_logins_7d
+      - user_failed_logins_1d
+      # Device batch
+      - device_distinct_users_30d
+      - device_txn_count_7d
+      - device_txn_count_1d
+      - device_is_shared_flag
+      # Merchant batch
+      - merchant_is_high_risk
+      - merchant_is_online
+      - merchant_txn_count_30d
+      - merchant_avg_ticket_30d
+      - merchant_fraud_rate_30d
+      # User streaming
+      - user_txn_count_5m
+      - user_txn_count_10m
+      - user_txn_count_1h
+      - user_txn_amount_sum_10m
+      - user_distinct_merchants_1h
+      # Device streaming
+      - device_txn_count_5m
+      - device_txn_count_10m
+      # Login streaming
+      - user_failed_logins_15m
