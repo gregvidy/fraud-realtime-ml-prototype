@@ -167,3 +167,10 @@ def training_pipeline(
     eval_task.set_display_name("evaluate")
     eval_task.after(train_task)
     _env(eval_task)
+    # B6: evaluate needs to fetch the just-trained model from MLflow (each KFP
+    # step has its own filesystem). train_model.py self-aliases the new version
+    # as 'candidate' (see training/experiments/lgbm_v1.yaml mlflow.model_alias);
+    # evaluate resolves that alias here.
+    eval_task.set_env_variable(
+        "MLFLOW_MODEL_URI", "models:/lgbm_fraud_model@candidate"
+    )

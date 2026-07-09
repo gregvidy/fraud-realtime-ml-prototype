@@ -10,15 +10,25 @@ with point-in-time correctness.
 
 Output: training/datasets/training_dataset.parquet
 
+B6: when running as a KFP component in-cluster, ClickHouse is unreachable
+and the parquet is expected to have been pre-staged in MinIO by
+`make bootstrap-data`. Setting the ``TRAINING_DATA_URI`` env var to an
+``s3://...`` path switches the script into "verify only" mode — no CH
+query, just an existence check. This is the mirror of the READ path
+that train_model.py already honours (B5b).
+
 Usage:
     python training/build_training_dataset.py
     python training/build_training_dataset.py --sample-frac 0.5
+    TRAINING_DATA_URI=s3://fraudml-data/training/datasets/training_dataset.parquet \\
+        python training/build_training_dataset.py
 """
 
 from __future__ import annotations
 
 import argparse
 import os
+import sys
 from pathlib import Path
 
 import clickhouse_connect
@@ -30,6 +40,28 @@ OUTPUT_DIR = Path(__file__).parent / "datasets"
 OUTPUT_PATH = OUTPUT_DIR / "training_dataset.parquet"
 
 
+def _verify_s3_existence(uri: str) -> int:
+    """KFP mode: assert the pre-staged parquet exists at ``uri``.
+
+    Returns the process exit code (0 on success, 1 on missing object).
+    """
+    import s3fs
+
+    fs = s3fs.S3FileSystem()  # honours AWS_ENDPOINT_URL_S3 + AWS_* env vars
+    key = uri.replace("s3://", "", 1)
+    if fs.exists(key):
+        info = fs.info(key)
+        size_mib = info.get("size", 0) / (1024 * 1024)
+        print(f"[build_dataset] pre-staged training data present at {uri} ({size_mib:.1f} MiB) — skipping ClickHouse rebuild.")
+        return 0
+    print(
+        f"[build_dataset] ERROR: TRAINING_DATA_URI={uri} not found in MinIO. "
+        "Run `make bootstrap-data` first to stage local parquets.",
+        file=sys.stderr,
+    )
+    return 1
+
+
 def get_ch_client():
     return clickhouse_connect.get_client(
         host=os.getenv("CLICKHOUSE_HOST", "localhost"),
@@ -39,7 +71,11 @@ def get_ch_client():
     )
 
 
-def main(sample_frac: float) -> None:
+def main(sample_frac: float) -> int:
+    uri = os.getenv("TRAINING_DATA_URI")
+    if uri and "://" in uri:
+        return _verify_s3_existence(uri)
+
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
     print("Reading main.fct_training_dataset from ClickHouse...")
@@ -65,6 +101,7 @@ def main(sample_frac: float) -> None:
 
     df.to_parquet(OUTPUT_PATH, index=False)
     print(f"\nSaved → {OUTPUT_PATH}  ({total:,} rows, {len(df.columns)} columns)")
+    return 0
 
 
 if __name__ == "__main__":
@@ -76,4 +113,4 @@ if __name__ == "__main__":
         help="Fraction of rows to sample deterministically via cityHash64(transaction_id) (default: 1.0 = all)",
     )
     args = parser.parse_args()
-    main(args.sample_frac)
+    raise SystemExit(main(args.sample_frac))
