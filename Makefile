@@ -1,4 +1,4 @@
-.PHONY: help setup infra-up infra-down seed-data reseed-data append-data _truncate-raw dbt-run feast-apply materialize train train-only train-isolated train-only-isolated start-api start-api-dev stop-api stream-events stream-producer stream-consumer score-test load-test load-test-ui clean export-to-clickhouse offline-pipeline migrate-db mlflow-ui promote-model alias-model list-models docker-stats push-artifacts deploy-aws deploy-push deploy-init deploy-stop deploy-start deploy-terminate deploy-local deploy-local-down train-docker train-docker-watch stream-docker stream-docker-stop ssm-setup ssm-shell ssm-tunnel ssm-tunnel-mlflow ssm-tunnel-locust start-remote-locust ch-up ch-down ch-logs ch-status ch-shell ch-verify-rbac stream-up stream-down stream-topics stream-schemas stream-schemas-list stream-status stream-logs stream-console stream-ch-apply stream-ch-status stream-ch-lag stream-ch-drop outbox-migrate outbox-relay outbox-produce outbox-status stream-ch-fallback-test cluster-up cluster-down cluster-status argocd-password argocd-ui kubeflow-up kubeflow-down kubeflow-status kubeflow-ui dp-up dp-down dp-status pg-shell mlflow-k8s-ui stream-k8s-up stream-k8s-down stream-k8s-status stream-k8s-console-ui stream-k8s-rpk ch-k8s-up ch-k8s-down ch-k8s-status ch-k8s-shell ch-k8s-verify-rbac fraudml-list fraudml-validate fraudml-describe fraudml-services fraudml-test pipeline-compile pipeline-test pipeline-image-build pipeline-image-import pipeline-submit
+.PHONY: help setup infra-up infra-down seed-data reseed-data append-data _truncate-raw dbt-run feast-apply materialize train train-only train-isolated train-only-isolated start-api start-api-dev stop-api stream-events stream-producer stream-consumer score-test load-test load-test-ui clean export-to-clickhouse offline-pipeline migrate-db mlflow-ui promote-model alias-model list-models docker-stats push-artifacts deploy-aws deploy-push deploy-init deploy-stop deploy-start deploy-terminate deploy-local deploy-local-down train-docker train-docker-watch stream-docker stream-docker-stop ssm-setup ssm-shell ssm-tunnel ssm-tunnel-mlflow ssm-tunnel-locust start-remote-locust ch-up ch-down ch-logs ch-status ch-shell ch-verify-rbac stream-up stream-down stream-topics stream-schemas stream-schemas-list stream-status stream-logs stream-console stream-ch-apply stream-ch-status stream-ch-lag stream-ch-drop outbox-migrate outbox-relay outbox-produce outbox-status stream-ch-fallback-test cluster-up cluster-down cluster-status argocd-password argocd-ui kubeflow-up kubeflow-down kubeflow-status kubeflow-ui dp-up dp-down dp-status pg-shell mlflow-k8s-ui stream-k8s-up stream-k8s-down stream-k8s-status stream-k8s-console-ui stream-k8s-rpk ch-k8s-up ch-k8s-down ch-k8s-status ch-k8s-shell ch-k8s-verify-rbac fraudml-list fraudml-validate fraudml-describe fraudml-services fraudml-test pipeline-compile pipeline-test pipeline-image-build pipeline-image-import pipeline-submit hpo-apply hpo-status hpo-delete hpo-test
 
 CONDA_ENV := fraud-realtime-ml
 CONDA_PREFIX := $(shell conda info --base)/envs/$(CONDA_ENV)
@@ -950,3 +950,38 @@ r = c.create_run_from_pipeline_package( \
     experiment_name='fraudml-training', \
 ); \
 print(f'Submitted: run_id={r.run_id}')"
+
+# =========================================================================
+# B3: Katib HPO — LightGBM + XGBoost hyperparameter search
+# =========================================================================
+#
+# Switch models via MODEL variable:
+#   make hpo-apply                # LightGBM (default)
+#   make hpo-apply MODEL=xgboost  # XGBoost
+#   make hpo-status MODEL=xgboost
+#   make hpo-delete MODEL=xgboost
+
+KATIB_NS       ?= kubeflow
+MODEL          ?= lgbm
+HPO_EXPERIMENT ?= fraudml-$(MODEL)-hpo
+HPO_YAML       ?= katib/experiments/$(MODEL)_hpo.yaml
+
+hpo-apply: ## Apply a Katib Experiment (default MODEL=lgbm, or MODEL=xgboost)
+	# Katib admission webhook requires this namespace label to inject the
+	# metrics-collector sidecar into trial pods. `--overwrite` = idempotent.
+	kubectl label ns $(KATIB_NS) katib.kubeflow.org/metrics-collector-injection=enabled --overwrite
+	kubectl apply -f $(HPO_YAML)
+
+hpo-status: ## Show trials + best trial for the running Experiment (respects MODEL)
+	@echo "=== Experiment ==="
+	@kubectl -n $(KATIB_NS) get experiment $(HPO_EXPERIMENT) -o wide 2>/dev/null || \
+	  echo "Experiment $(HPO_EXPERIMENT) not found in namespace $(KATIB_NS)"
+	@echo ""
+	@echo "=== Trials ==="
+	@kubectl -n $(KATIB_NS) get trials -l katib.kubeflow.org/experiment=$(HPO_EXPERIMENT) 2>/dev/null || true
+
+hpo-delete: ## Delete the running Experiment (respects MODEL, idempotent)
+	kubectl delete -f $(HPO_YAML) --ignore-not-found
+
+hpo-test: ## Run Katib Experiment structural + wrapper unit tests (both models)
+	@$(CONDA_PREFIX)/bin/pytest tests/test_katib_experiment.py -v

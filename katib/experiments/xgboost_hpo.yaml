@@ -1,0 +1,142 @@
+# Katib Experiment — XGBoost HPO for fraud model
+#
+# Random search over 5 XGBoost hyperparameters. Each trial runs
+# `training/katib_trial.py`, which merges HPs into experiments/lgbm_v1.yaml
+# AND overrides `model.type` from `lightgbm` to `xgboost`, then execs
+# `training/train_model.py`. train_model.py dispatches on `model.type` to
+# pick the correct sub-block (`model.xgboost.*`), so no code changes needed.
+#
+# Objective: maximise PR-AUC on the OOT hold-out (same as LGBM HPO).
+#
+# Runtime prerequisites: identical to the LGBM Experiment (see lgbm_hpo.yaml
+# header). Deferred to Phase C.
+#
+# Apply with: make hpo-apply MODEL=xgboost
+# Status:     make hpo-status MODEL=xgboost
+# Delete:     make hpo-delete MODEL=xgboost
+apiVersion: kubeflow.org/v1beta1
+kind: Experiment
+metadata:
+  name: fraudml-xgboost-hpo
+  namespace: kubeflow
+  labels:
+    app: fraudml
+    slice: B3
+    model: xgboost
+spec:
+  objective:
+    type: maximize
+    goal: 0.60
+    objectiveMetricName: PR-AUC
+    additionalMetricNames:
+      - ROC-AUC
+
+  algorithm:
+    algorithmName: random
+
+  parallelTrialCount: 2
+  maxTrialCount: 12
+  maxFailedTrialCount: 3
+
+  parameters:
+    - name: max-depth
+      parameterType: int
+      feasibleSpace:
+        min: "3"
+        max: "12"
+    - name: learning-rate
+      parameterType: double
+      feasibleSpace:
+        min: "0.01"
+        max: "0.20"
+    - name: n-estimators
+      parameterType: int
+      feasibleSpace:
+        min: "200"
+        max: "800"
+        step: "50"
+    - name: subsample
+      parameterType: double
+      feasibleSpace:
+        min: "0.60"
+        max: "1.00"
+    - name: colsample-bytree
+      parameterType: double
+      feasibleSpace:
+        min: "0.60"
+        max: "1.00"
+
+  metricsCollectorSpec:
+    collector:
+      kind: StdOut
+    source:
+      filter:
+        metricsFormat:
+          - "(PR-AUC)=([+-]?[0-9]*\\.?[0-9]+)"
+          - "(ROC-AUC)=([+-]?[0-9]*\\.?[0-9]+)"
+
+  trialTemplate:
+    primaryContainerName: training
+    trialParameters:
+      - name: maxDepth
+        description: XGBoost max_depth
+        reference: max-depth
+      - name: learningRate
+        description: XGBoost learning_rate
+        reference: learning-rate
+      - name: nEstimators
+        description: XGBoost n_estimators
+        reference: n-estimators
+      - name: subsample
+        description: XGBoost subsample
+        reference: subsample
+      - name: colsampleBytree
+        description: XGBoost colsample_bytree
+        reference: colsample-bytree
+    trialSpec:
+      apiVersion: batch/v1
+      kind: Job
+      spec:
+        backoffLimit: 0
+        template:
+          spec:
+            restartPolicy: Never
+            containers:
+              - name: training
+                image: fraudml/training:v1
+                imagePullPolicy: IfNotPresent
+                env:
+                  - name: MLFLOW_TRACKING_URI
+                    value: http://mlflow.data-plane.svc.cluster.local:5000
+                  - name: FRAUDML_FEATURE_DEFS
+                    value: /app/feature_definitions
+                  - name: MLFLOW_EXPERIMENT_NAME
+                    value: fraudml-xgboost-hpo
+                command:
+                  - python
+                  - -m
+                  - training.katib_trial
+                args:
+                  - --config
+                  - training/experiments/lgbm_v1.yaml
+                  # Constant override — switch model family from the config's
+                  # default (lightgbm) to xgboost. Not a trial parameter.
+                  - --set
+                  - model.type=xgboost
+                  - --set
+                  - model.xgboost.max_depth=${trialParameters.maxDepth}
+                  - --set
+                  - model.xgboost.learning_rate=${trialParameters.learningRate}
+                  - --set
+                  - model.xgboost.n_estimators=${trialParameters.nEstimators}
+                  - --set
+                  - model.xgboost.subsample=${trialParameters.subsample}
+                  - --set
+                  - model.xgboost.colsample_bytree=${trialParameters.colsampleBytree}
+                resources:
+                  requests:
+                    cpu: "1"
+                    memory: 2Gi
+                  limits:
+                    cpu: "2"
+                    memory: 4Gi
