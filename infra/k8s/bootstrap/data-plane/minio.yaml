@@ -1,0 +1,161 @@
+# MinIO — S3-compatible object storage for training data.
+#
+# Not intended as an MLflow artifact backend in this slice — MLflow keeps its
+# existing PVC-backed artifact store (see mlflow.yaml). B5b only introduces
+# MinIO as a place to park training parquets so retraining doesn't require
+# rebuilding the training image.
+#
+# Bucket `fraudml-data` is provisioned by the init Job below (idempotent via
+# `mc mb --ignore-existing`).
+#
+# Local dev only:
+#   * single replica, no distributed mode
+#   * root creds baked into a Secret (minioadmin:minioadmin — POC)
+#   * ReadWriteOnce PVC (10Gi) — cluster is single-node k3d
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: minio-root
+  namespace: data-plane
+type: Opaque
+stringData:
+  # POC creds — DO NOT use for anything reachable outside the cluster.
+  root-user: minioadmin
+  root-password: minioadmin
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: minio-data
+  namespace: data-plane
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: minio
+  namespace: data-plane
+spec:
+  replicas: 1
+  strategy:
+    # Recreate — single-writer PVC can't be dual-attached during rollouts.
+    type: Recreate
+  selector:
+    matchLabels:
+      app: minio
+  template:
+    metadata:
+      labels:
+        app: minio
+    spec:
+      containers:
+        - name: minio
+          image: minio/minio:RELEASE.2024-08-26T15-33-07Z
+          args:
+            - server
+            - /data
+            - --console-address
+            - ":9001"
+          env:
+            - name: MINIO_ROOT_USER
+              valueFrom:
+                secretKeyRef:
+                  name: minio-root
+                  key: root-user
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: minio-root
+                  key: root-password
+          ports:
+            - containerPort: 9000
+              name: s3
+            - containerPort: 9001
+              name: console
+          readinessProbe:
+            httpGet:
+              path: /minio/health/ready
+              port: 9000
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /minio/health/live
+              port: 9000
+            initialDelaySeconds: 15
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          volumeMounts:
+            - mountPath: /data
+              name: data
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: minio-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio
+  namespace: data-plane
+spec:
+  selector:
+    app: minio
+  ports:
+    - name: s3
+      port: 9000
+      targetPort: s3
+    - name: console
+      port: 9001
+      targetPort: console
+---
+# Idempotent bucket provisioning. Runs once per apply; safe to re-run.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: minio-bucket-init
+  namespace: data-plane
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 300
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: mc
+          image: minio/mc:RELEASE.2024-08-13T05-33-17Z
+          env:
+            - name: MINIO_ROOT_USER
+              valueFrom:
+                secretKeyRef:
+                  name: minio-root
+                  key: root-user
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: minio-root
+                  key: root-password
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -eu
+              # Wait for MinIO to be reachable (the Service may resolve before
+              # the Deployment is ready).
+              until mc alias set fraud http://minio.data-plane.svc.cluster.local:9000 \
+                    "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD"; do
+                echo "waiting for minio..."
+                sleep 3
+              done
+              mc mb --ignore-existing fraud/fraudml-data
+              mc ls fraud/

@@ -27,6 +27,7 @@ Outputs:
 
 import argparse
 import json
+import os
 from pathlib import Path
 
 import joblib
@@ -61,6 +62,20 @@ def _load_config(path: Path) -> dict:
         path = _TRAINING_DIR / path
     with open(path) as f:
         return yaml.safe_load(f)
+
+
+def _resolve_data_path(config_path_value: str, env_override: str | None = None):
+    """Decide where the training parquet lives.
+
+    Precedence: ``TRAINING_DATA_URI`` env (B5b) → ``data.path`` from the config.
+    A ``scheme://...`` string is returned as-is so pandas + s3fs can pick it up;
+    a plain filesystem path is normalised against the project root.
+    """
+    raw = env_override or config_path_value
+    if "://" in raw:
+        return raw
+    p = Path(raw)
+    return p if p.is_absolute() else _PROJECT_ROOT / p
 
 # ---------------------------------------------------------------------------
 # Split helpers
@@ -347,7 +362,7 @@ def main(config_path: Path) -> None:
     calib_cfg  = cfg.get("calibration", {"enabled": False})
 
     raw_path  = data_cfg["path"]
-    data_path = Path(raw_path) if Path(raw_path).is_absolute() else _PROJECT_ROOT / raw_path
+    data_path = _resolve_data_path(raw_path, os.getenv("TRAINING_DATA_URI"))
 
     model_dir   = _PROJECT_ROOT / "models"
     model_dir.mkdir(parents=True, exist_ok=True)

@@ -8,6 +8,7 @@
 #   4. Postgres Cluster CR (fraud-db, 1 primary + 1 replica) + credentials
 #   5. Redis Deployment (dev, no persistence)
 #   6. MLflow Deployment (PG-backed, PVC artifacts)
+#   7. MinIO Deployment + bucket-init Job (B5b — training data store)
 #
 # Waits for readiness after each step so failures surface fast.
 #
@@ -57,9 +58,18 @@ log "5/6 apply Redis Deployment"
 kubectl apply -f "$DIR/redis.yaml" >/dev/null
 kubectl -n data-plane wait --for=condition=Available deployment/fraud-redis --timeout=120s
 
-log "6/6 apply MLflow Deployment"
+log "6/7 apply MLflow Deployment"
 kubectl apply -f "$DIR/mlflow.yaml" >/dev/null
 log "    waiting for mlflow Available (may take ~90s on first pull)..."
 kubectl -n data-plane wait --for=condition=Available deployment/mlflow --timeout=300s
+
+log "7/7 apply MinIO Deployment + bucket-init Job"
+kubectl apply -f "$DIR/minio.yaml" >/dev/null
+log "    waiting for minio Available..."
+kubectl -n data-plane wait --for=condition=Available deployment/minio --timeout=180s
+log "    waiting for bucket-init Job to complete..."
+kubectl -n data-plane wait --for=condition=Complete job/minio-bucket-init --timeout=120s || {
+    log "    WARN: bucket-init Job did not reach Complete within 120s"
+}
 
 log "done"
