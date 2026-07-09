@@ -952,20 +952,27 @@ r = c.create_run_from_pipeline_package( \
 print(f'Submitted: run_id={r.run_id}')"
 
 # =========================================================================
-# B3: Katib HPO — LightGBM hyperparameter search
+# B3: Katib HPO — LightGBM + XGBoost hyperparameter search
 # =========================================================================
+#
+# Switch models via MODEL variable:
+#   make hpo-apply                # LightGBM (default)
+#   make hpo-apply MODEL=xgboost  # XGBoost
+#   make hpo-status MODEL=xgboost
+#   make hpo-delete MODEL=xgboost
 
 KATIB_NS       ?= kubeflow
-HPO_EXPERIMENT ?= fraudml-lgbm-hpo
-HPO_YAML       ?= katib/experiments/lgbm_hpo.yaml
+MODEL          ?= lgbm
+HPO_EXPERIMENT ?= fraudml-$(MODEL)-hpo
+HPO_YAML       ?= katib/experiments/$(MODEL)_hpo.yaml
 
-hpo-apply: ## Apply the LightGBM Katib Experiment to the cluster
+hpo-apply: ## Apply a Katib Experiment (default MODEL=lgbm, or MODEL=xgboost)
 	# Katib admission webhook requires this namespace label to inject the
 	# metrics-collector sidecar into trial pods. `--overwrite` = idempotent.
 	kubectl label ns $(KATIB_NS) katib.kubeflow.org/metrics-collector-injection=enabled --overwrite
 	kubectl apply -f $(HPO_YAML)
 
-hpo-status: ## Show trials + best trial for the running Experiment
+hpo-status: ## Show trials + best trial for the running Experiment (respects MODEL)
 	@echo "=== Experiment ==="
 	@kubectl -n $(KATIB_NS) get experiment $(HPO_EXPERIMENT) -o wide 2>/dev/null || \
 	  echo "Experiment $(HPO_EXPERIMENT) not found in namespace $(KATIB_NS)"
@@ -973,8 +980,8 @@ hpo-status: ## Show trials + best trial for the running Experiment
 	@echo "=== Trials ==="
 	@kubectl -n $(KATIB_NS) get trials -l katib.kubeflow.org/experiment=$(HPO_EXPERIMENT) 2>/dev/null || true
 
-hpo-delete: ## Delete the running Experiment (frees CRs + trial jobs)
+hpo-delete: ## Delete the running Experiment (respects MODEL, idempotent)
 	kubectl delete -f $(HPO_YAML) --ignore-not-found
 
-hpo-test: ## Run Katib Experiment structural + wrapper unit tests
+hpo-test: ## Run Katib Experiment structural + wrapper unit tests (both models)
 	@$(CONDA_PREFIX)/bin/pytest tests/test_katib_experiment.py -v
