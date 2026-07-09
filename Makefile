@@ -1,4 +1,4 @@
-.PHONY: help setup infra-up infra-down seed-data reseed-data append-data _truncate-raw dbt-run feast-apply materialize train train-only train-isolated train-only-isolated start-api start-api-dev stop-api stream-events stream-producer stream-consumer score-test load-test load-test-ui clean export-to-clickhouse offline-pipeline migrate-db mlflow-ui promote-model alias-model list-models docker-stats push-artifacts deploy-aws deploy-push deploy-init deploy-stop deploy-start deploy-terminate deploy-local deploy-local-down train-docker train-docker-watch stream-docker stream-docker-stop ssm-setup ssm-shell ssm-tunnel ssm-tunnel-mlflow ssm-tunnel-locust start-remote-locust ch-up ch-down ch-logs ch-status ch-shell ch-verify-rbac stream-up stream-down stream-topics stream-schemas stream-schemas-list stream-status stream-logs stream-console stream-ch-apply stream-ch-status stream-ch-lag stream-ch-drop outbox-migrate outbox-relay outbox-produce outbox-status stream-ch-fallback-test cluster-up cluster-down cluster-status argocd-password argocd-ui kubeflow-up kubeflow-down kubeflow-status kubeflow-ui dp-up dp-down dp-status pg-shell mlflow-k8s-ui stream-k8s-up stream-k8s-down stream-k8s-status stream-k8s-console-ui stream-k8s-rpk ch-k8s-up ch-k8s-down ch-k8s-status ch-k8s-shell ch-k8s-verify-rbac fraudml-list fraudml-validate fraudml-describe fraudml-services fraudml-test pipeline-compile pipeline-test pipeline-image-build pipeline-image-import pipeline-submit hpo-apply hpo-status hpo-delete hpo-test serve-image-build serve-image-import kserve-apply kserve-status kserve-delete kserve-test
+.PHONY: help setup infra-up infra-down seed-data reseed-data append-data _truncate-raw dbt-run feast-apply materialize train train-only train-isolated train-only-isolated start-api start-api-dev stop-api stream-events stream-producer stream-consumer score-test load-test load-test-ui clean export-to-clickhouse offline-pipeline migrate-db mlflow-ui promote-model alias-model list-models docker-stats push-artifacts deploy-aws deploy-push deploy-init deploy-stop deploy-start deploy-terminate deploy-local deploy-local-down train-docker train-docker-watch stream-docker stream-docker-stop ssm-setup ssm-shell ssm-tunnel ssm-tunnel-mlflow ssm-tunnel-locust start-remote-locust ch-up ch-down ch-logs ch-status ch-shell ch-verify-rbac stream-up stream-down stream-topics stream-schemas stream-schemas-list stream-status stream-logs stream-console stream-ch-apply stream-ch-status stream-ch-lag stream-ch-drop outbox-migrate outbox-relay outbox-produce outbox-status stream-ch-fallback-test cluster-up cluster-down cluster-status argocd-password argocd-ui kubeflow-up kubeflow-down kubeflow-status kubeflow-ui dp-up dp-down dp-status pg-shell mlflow-k8s-ui stream-k8s-up stream-k8s-down stream-k8s-status stream-k8s-console-ui stream-k8s-rpk ch-k8s-up ch-k8s-down ch-k8s-status ch-k8s-shell ch-k8s-verify-rbac fraudml-list fraudml-validate fraudml-describe fraudml-services fraudml-test pipeline-compile pipeline-test pipeline-image-build pipeline-image-import pipeline-submit hpo-apply hpo-status hpo-delete hpo-test serve-image-build serve-image-import kserve-apply kserve-status kserve-delete kserve-test minio-k8s-up minio-k8s-down minio-k8s-status minio-console bootstrap-data
 
 CONDA_ENV := fraud-realtime-ml
 CONDA_PREFIX := $(shell conda info --base)/envs/$(CONDA_ENV)
@@ -1017,3 +1017,47 @@ kserve-delete: ## Delete the InferenceService (idempotent)
 
 kserve-test: ## Run InferenceService structural tests
 	@$(CONDA_PREFIX)/bin/pytest tests/test_kserve_inference_service.py -v
+
+# =========================================================================
+# B5b: MinIO — S3-compatible training-data store
+# =========================================================================
+
+MINIO_NS       ?= data-plane
+MINIO_YAML     ?= infra/k8s/bootstrap/data-plane/minio.yaml
+MINIO_BUCKET   ?= fraudml-data
+# Set to the k3d node port or localhost port-forward (see minio-console).
+MINIO_ENDPOINT ?= http://localhost:9000
+
+minio-k8s-up: ## Apply MinIO Deployment + Service + bucket-init Job
+	kubectl apply -f $(MINIO_YAML)
+	@echo "Waiting for MinIO Available..."
+	@kubectl -n $(MINIO_NS) wait --for=condition=Available deployment/minio --timeout=180s
+	@kubectl -n $(MINIO_NS) wait --for=condition=Complete job/minio-bucket-init --timeout=120s || \
+	  echo "WARN: bucket-init not Complete — kubectl -n $(MINIO_NS) logs job/minio-bucket-init"
+
+minio-k8s-down: ## Delete MinIO manifests (keeps PVC — data persists)
+	kubectl delete -f $(MINIO_YAML) --ignore-not-found
+
+minio-k8s-status: ## Show MinIO pod, PVC, Job, and bucket listing
+	@echo "=== MinIO Deployment ==="
+	@kubectl -n $(MINIO_NS) get deploy/minio 2>/dev/null || echo "not found"
+	@echo ""
+	@echo "=== MinIO PVC ==="
+	@kubectl -n $(MINIO_NS) get pvc minio-data 2>/dev/null || echo "not found"
+	@echo ""
+	@echo "=== bucket-init Job ==="
+	@kubectl -n $(MINIO_NS) get job/minio-bucket-init 2>/dev/null || echo "not found"
+
+minio-console: ## Port-forward MinIO console (:9001) + S3 API (:9000) to localhost
+	@echo "MinIO S3 API      → http://localhost:9000"
+	@echo "MinIO console UI  → http://localhost:9001  (user: minioadmin / pass: minioadmin)"
+	kubectl -n $(MINIO_NS) port-forward svc/minio 9000:9000 9001:9001
+
+bootstrap-data: ## Upload local data/parquet/*.parquet + training/datasets/*.parquet to MinIO
+	@echo "Requires: 'make minio-console' running in another terminal (or MINIO_ENDPOINT set)."
+	AWS_ENDPOINT_URL_S3=$(MINIO_ENDPOINT) \
+	AWS_ACCESS_KEY_ID=minioadmin \
+	AWS_SECRET_ACCESS_KEY=minioadmin \
+	AWS_REGION=us-east-1 \
+	BUCKET=$(MINIO_BUCKET) \
+	$(CONDA_PREFIX)/bin/python scripts/upload_training_data.py
