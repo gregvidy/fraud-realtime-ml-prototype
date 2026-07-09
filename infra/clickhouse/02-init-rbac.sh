@@ -16,13 +16,14 @@
 # ============================================================================
 set -eu
 
+: "${CLICKHOUSE_HOST:=127.0.0.1}"
 : "${CLICKHOUSE_PASSWORD:?CLICKHOUSE_PASSWORD (admin) must be set}"
 : "${CLICKHOUSE_ANALYST_PASSWORD:?CLICKHOUSE_ANALYST_PASSWORD must be set}"
 : "${CLICKHOUSE_BI_PASSWORD:?CLICKHOUSE_BI_PASSWORD must be set}"
 : "${CLICKHOUSE_DS_PASSWORD:?CLICKHOUSE_DS_PASSWORD must be set}"
 : "${CLICKHOUSE_SW_PASSWORD:?CLICKHOUSE_SW_PASSWORD must be set}"
 
-clickhouse-client --host 127.0.0.1 --user default --password "$CLICKHOUSE_PASSWORD" --multiquery <<SQL
+clickhouse-client --host "$CLICKHOUSE_HOST" --user default --password "$CLICKHOUSE_PASSWORD" --multiquery <<SQL
 -- ── Profiles ───────────────────────────────────────────────────────────
 CREATE SETTINGS PROFILE IF NOT EXISTS analyst_profile SETTINGS
     readonly = 1,
