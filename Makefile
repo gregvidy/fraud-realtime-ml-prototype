@@ -1,4 +1,4 @@
-.PHONY: help setup infra-up infra-down seed-data reseed-data append-data _truncate-raw dbt-run feast-apply materialize train train-only train-isolated train-only-isolated start-api start-api-dev stop-api stream-events stream-producer stream-consumer score-test load-test load-test-ui clean export-to-clickhouse offline-pipeline migrate-db mlflow-ui promote-model alias-model list-models docker-stats push-artifacts deploy-aws deploy-push deploy-init deploy-stop deploy-start deploy-terminate deploy-local deploy-local-down train-docker train-docker-watch stream-docker stream-docker-stop ssm-setup ssm-shell ssm-tunnel ssm-tunnel-mlflow ssm-tunnel-locust start-remote-locust ch-up ch-down ch-logs ch-status ch-shell ch-verify-rbac stream-up stream-down stream-topics stream-schemas stream-schemas-list stream-status stream-logs stream-console stream-ch-apply stream-ch-status stream-ch-lag stream-ch-drop outbox-migrate outbox-relay outbox-produce outbox-status stream-ch-fallback-test cluster-up cluster-down cluster-status argocd-password argocd-ui kubeflow-up kubeflow-down kubeflow-status kubeflow-ui dp-up dp-down dp-status pg-shell mlflow-k8s-ui stream-k8s-up stream-k8s-down stream-k8s-status stream-k8s-console-ui stream-k8s-rpk ch-k8s-up ch-k8s-down ch-k8s-status ch-k8s-shell ch-k8s-verify-rbac fraudml-list fraudml-validate fraudml-describe fraudml-services fraudml-test pipeline-compile pipeline-test pipeline-image-build pipeline-image-import pipeline-submit hpo-apply hpo-status hpo-delete hpo-test serve-image-build serve-image-import kserve-apply kserve-status kserve-delete kserve-test minio-k8s-up minio-k8s-down minio-k8s-status minio-console bootstrap-data
+.PHONY: help setup infra-up infra-down seed-data reseed-data append-data _truncate-raw dbt-run feast-apply materialize train train-only train-isolated train-only-isolated start-api start-api-dev stop-api stream-events stream-producer stream-consumer score-test load-test load-test-ui clean export-to-clickhouse offline-pipeline migrate-db mlflow-ui promote-model alias-model list-models docker-stats push-artifacts deploy-aws deploy-push deploy-init deploy-stop deploy-start deploy-terminate deploy-local deploy-local-down train-docker train-docker-watch stream-docker stream-docker-stop ssm-setup ssm-shell ssm-tunnel ssm-tunnel-mlflow ssm-tunnel-locust start-remote-locust ch-up ch-down ch-logs ch-status ch-shell ch-verify-rbac stream-up stream-down stream-topics stream-schemas stream-schemas-list stream-status stream-logs stream-console stream-ch-apply stream-ch-status stream-ch-lag stream-ch-drop outbox-migrate outbox-relay outbox-produce outbox-status stream-ch-fallback-test cluster-up cluster-down cluster-status argocd-password argocd-ui kubeflow-up kubeflow-down kubeflow-status kubeflow-ui dp-up dp-down dp-status pg-shell mlflow-k8s-ui stream-k8s-up stream-k8s-down stream-k8s-status stream-k8s-console-ui stream-k8s-rpk ch-k8s-up ch-k8s-down ch-k8s-status ch-k8s-shell ch-k8s-verify-rbac fraudml-list fraudml-validate fraudml-describe fraudml-services fraudml-test pipeline-compile pipeline-test pipeline-image-build pipeline-image-import pipeline-submit hpo-apply hpo-status hpo-delete hpo-test serve-image-build serve-image-import kserve-apply kserve-status kserve-delete kserve-test minio-k8s-up minio-k8s-down minio-k8s-status minio-console bootstrap-data bootstrap promote-latest
 
 CONDA_ENV := fraud-realtime-ml
 CONDA_PREFIX := $(shell conda info --base)/envs/$(CONDA_ENV)
@@ -1061,3 +1061,19 @@ bootstrap-data: ## Upload local data/parquet/*.parquet + training/datasets/*.par
 	AWS_REGION=us-east-1 \
 	BUCKET=$(MINIO_BUCKET) \
 	$(CONDA_PREFIX)/bin/python scripts/upload_training_data.py
+
+# =========================================================================
+# B5c: bootstrap wiring — chain the whole platform end-to-end
+# =========================================================================
+
+# Registered model name in MLflow. Matches training/experiments/lgbm_v1.yaml's
+# mlflow.model_registry_name. Distinct from the B3 `MODEL` var (which selects
+# the Katib experiment family — lgbm | xgboost).
+REGISTERED_MODEL ?= lgbm_fraud_model
+ALIAS            ?= production
+
+promote-latest: ## Alias the latest version of $(REGISTERED_MODEL) as $(ALIAS) in MLflow
+	@$(CONDA_PREFIX)/bin/python scripts/promote_latest.py --model $(REGISTERED_MODEL) --alias $(ALIAS)
+
+bootstrap: ## End-to-end platform provisioning (cluster → data → training → serving)
+	bash scripts/bootstrap.sh

@@ -43,6 +43,16 @@ deploymentSpec:
           value: http://mlflow.data-plane.svc.cluster.local:5000
         - name: FRAUDML_FEATURE_DEFS
           value: /app/feature_definitions
+        - name: TRAINING_DATA_URI
+          value: s3://fraudml-data/training/datasets/training_dataset.parquet
+        - name: AWS_ENDPOINT_URL_S3
+          value: http://minio.data-plane.svc.cluster.local:9000
+        - name: AWS_ACCESS_KEY_ID
+          value: minioadmin
+        - name: AWS_SECRET_ACCESS_KEY
+          value: minioadmin
+        - name: AWS_REGION
+          value: us-east-1
         image: fraudml/training:v1
     exec-evaluate:
       container:
@@ -58,6 +68,16 @@ deploymentSpec:
           value: http://mlflow.data-plane.svc.cluster.local:5000
         - name: FRAUDML_FEATURE_DEFS
           value: /app/feature_definitions
+        - name: TRAINING_DATA_URI
+          value: s3://fraudml-data/training/datasets/training_dataset.parquet
+        - name: AWS_ENDPOINT_URL_S3
+          value: http://minio.data-plane.svc.cluster.local:9000
+        - name: AWS_ACCESS_KEY_ID
+          value: minioadmin
+        - name: AWS_SECRET_ACCESS_KEY
+          value: minioadmin
+        - name: AWS_REGION
+          value: us-east-1
         image: fraudml/training:v1
     exec-train:
       container:
@@ -73,6 +93,16 @@ deploymentSpec:
           value: http://mlflow.data-plane.svc.cluster.local:5000
         - name: FRAUDML_FEATURE_DEFS
           value: /app/feature_definitions
+        - name: TRAINING_DATA_URI
+          value: s3://fraudml-data/training/datasets/training_dataset.parquet
+        - name: AWS_ENDPOINT_URL_S3
+          value: http://minio.data-plane.svc.cluster.local:9000
+        - name: AWS_ACCESS_KEY_ID
+          value: minioadmin
+        - name: AWS_SECRET_ACCESS_KEY
+          value: minioadmin
+        - name: AWS_REGION
+          value: us-east-1
         image: fraudml/training:v1
 pipelineInfo:
   description: "End-to-end fraud model training: build dataset \u2192 train \u2192\

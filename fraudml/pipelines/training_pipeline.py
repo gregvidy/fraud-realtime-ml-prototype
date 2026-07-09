@@ -111,11 +111,26 @@ def evaluate(
 MLFLOW_TRACKING_URI = "http://mlflow.data-plane.svc.cluster.local:5000"
 FEATURE_DEFS_DIR = "/app/feature_definitions"
 
+# B5c: MinIO wiring. Each component reads training parquet from MinIO instead
+# of the image-baked data/. POC creds match the minio-root Secret in
+# infra/k8s/bootstrap/data-plane/minio.yaml — swap for IRSA / secret injection
+# via kfp-kubernetes when moving beyond POC.
+TRAINING_DATA_URI = "s3://fraudml-data/training/datasets/training_dataset.parquet"
+S3_ENDPOINT_URL = "http://minio.data-plane.svc.cluster.local:9000"
+S3_ACCESS_KEY = "minioadmin"
+S3_SECRET_KEY = "minioadmin"
+S3_REGION = "us-east-1"
+
 
 def _env(task) -> None:
-    """Set the two env vars every training component needs."""
+    """Set every env var each training component needs (MLflow + Feature Registry + MinIO)."""
     task.set_env_variable("MLFLOW_TRACKING_URI", MLFLOW_TRACKING_URI)
     task.set_env_variable("FRAUDML_FEATURE_DEFS", FEATURE_DEFS_DIR)
+    task.set_env_variable("TRAINING_DATA_URI", TRAINING_DATA_URI)
+    task.set_env_variable("AWS_ENDPOINT_URL_S3", S3_ENDPOINT_URL)
+    task.set_env_variable("AWS_ACCESS_KEY_ID", S3_ACCESS_KEY)
+    task.set_env_variable("AWS_SECRET_ACCESS_KEY", S3_SECRET_KEY)
+    task.set_env_variable("AWS_REGION", S3_REGION)
 
 
 @dsl.pipeline(

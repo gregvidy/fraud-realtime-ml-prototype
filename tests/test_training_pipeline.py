@@ -67,6 +67,11 @@ def test_env_vars_set_on_every_component(tmp_path):
         env = {e["name"]: e["value"] for e in exec_spec["container"].get("env", [])}
         assert "MLFLOW_TRACKING_URI" in env, f"{name}: missing MLFLOW_TRACKING_URI"
         assert "FRAUDML_FEATURE_DEFS" in env, f"{name}: missing FRAUDML_FEATURE_DEFS"
+        # B5c: MinIO wiring so KFP components can read training data from S3.
+        assert "TRAINING_DATA_URI" in env, f"{name}: missing TRAINING_DATA_URI"
+        assert env["TRAINING_DATA_URI"].startswith("s3://"), f"{name}: TRAINING_DATA_URI must be an S3 URI"
+        for aws_var in ("AWS_ENDPOINT_URL_S3", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_REGION"):
+            assert aws_var in env, f"{name}: missing {aws_var}"
 
 
 def test_committed_yaml_matches_current_source(tmp_path):
