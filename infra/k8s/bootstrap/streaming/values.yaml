@@ -1,0 +1,40 @@
+# Minimal dev values for the redpandadata/redpanda Helm chart.
+# 1 broker, TLS disabled, no auth, no external listener (in-cluster only).
+# Console + Schema Registry + PandaProxy come bundled with the chart.
+---
+statefulset:
+  replicas: 1
+
+resources:
+  cpu:
+    cores: 1
+  memory:
+    # Seastar allocator needs ~860MiB of usable heap; 1Gi limit minus chart
+    # reserved (202M) leaves only ~820M which trips "insufficient physical memory".
+    # 2Gi gives comfortable headroom for dev.
+    container:
+      max: 2Gi
+
+storage:
+  persistentVolume:
+    enabled: true
+    size: 5Gi
+
+tls:
+  enabled: false
+
+auth:
+  sasl:
+    enabled: false
+
+external:
+  enabled: false
+
+console:
+  enabled: true
+
+# k3d has ephemeral node storage; small chart-side data dir is fine
+config:
+  cluster:
+    default_topic_replications: 1
+    auto_create_topics_enabled: false

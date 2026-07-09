@@ -1,4 +1,4 @@
-.PHONY: help setup infra-up infra-down seed-data reseed-data append-data _truncate-raw dbt-run feast-apply materialize train train-only train-isolated train-only-isolated start-api start-api-dev stop-api stream-events stream-producer stream-consumer score-test load-test load-test-ui clean export-to-clickhouse offline-pipeline migrate-db mlflow-ui promote-model alias-model list-models docker-stats push-artifacts deploy-aws deploy-push deploy-init deploy-stop deploy-start deploy-terminate deploy-local deploy-local-down train-docker train-docker-watch stream-docker stream-docker-stop ssm-setup ssm-shell ssm-tunnel ssm-tunnel-mlflow ssm-tunnel-locust start-remote-locust ch-up ch-down ch-logs ch-status ch-shell ch-verify-rbac stream-up stream-down stream-topics stream-schemas stream-schemas-list stream-status stream-logs stream-console stream-ch-apply stream-ch-status stream-ch-lag stream-ch-drop outbox-migrate outbox-relay outbox-produce outbox-status stream-ch-fallback-test cluster-up cluster-down cluster-status argocd-password argocd-ui kubeflow-up kubeflow-down kubeflow-status kubeflow-ui
+.PHONY: help setup infra-up infra-down seed-data reseed-data append-data _truncate-raw dbt-run feast-apply materialize train train-only train-isolated train-only-isolated start-api start-api-dev stop-api stream-events stream-producer stream-consumer score-test load-test load-test-ui clean export-to-clickhouse offline-pipeline migrate-db mlflow-ui promote-model alias-model list-models docker-stats push-artifacts deploy-aws deploy-push deploy-init deploy-stop deploy-start deploy-terminate deploy-local deploy-local-down train-docker train-docker-watch stream-docker stream-docker-stop ssm-setup ssm-shell ssm-tunnel ssm-tunnel-mlflow ssm-tunnel-locust start-remote-locust ch-up ch-down ch-logs ch-status ch-shell ch-verify-rbac stream-up stream-down stream-topics stream-schemas stream-schemas-list stream-status stream-logs stream-console stream-ch-apply stream-ch-status stream-ch-lag stream-ch-drop outbox-migrate outbox-relay outbox-produce outbox-status stream-ch-fallback-test cluster-up cluster-down cluster-status argocd-password argocd-ui kubeflow-up kubeflow-down kubeflow-status kubeflow-ui dp-up dp-down dp-status pg-shell mlflow-k8s-ui stream-k8s-up stream-k8s-down stream-k8s-status stream-k8s-console-ui stream-k8s-rpk
 
 CONDA_ENV := fraud-realtime-ml
 CONDA_PREFIX := $(shell conda info --base)/envs/$(CONDA_ENV)
@@ -782,3 +782,76 @@ kubeflow-ui:
 	@echo "  user: user@example.com"
 	@echo "  pass: 12341234"
 	@kubectl -n istio-system port-forward svc/istio-ingressgateway 8080:80
+
+# ============================================================================
+# Slice A3a — data plane persistence & tracking (Postgres + Redis + MLflow)
+# ============================================================================
+DP_INSTALL := infra/k8s/bootstrap/data-plane/install.sh
+
+dp-up:
+	@command -v kubectl >/dev/null || { echo "kubectl not installed"; exit 1; }
+	bash $(DP_INSTALL)
+	@echo ""
+	@echo "==== dp-up complete ===="
+	@$(MAKE) --no-print-directory dp-status
+
+dp-down:
+	@kubectl delete -f infra/k8s/bootstrap/data-plane/mlflow.yaml --ignore-not-found --timeout=120s || true
+	@kubectl delete -f infra/k8s/bootstrap/data-plane/redis.yaml --ignore-not-found --timeout=120s || true
+	@kubectl delete -f infra/k8s/bootstrap/data-plane/postgres.yaml --ignore-not-found --timeout=300s || true
+	@kubectl delete configmap fraud-db-schema -n data-plane --ignore-not-found || true
+	@kubectl delete namespace data-plane --ignore-not-found --timeout=300s || true
+	@kubectl delete -f infra/k8s/bootstrap/data-plane/cnpg-operator.yaml --ignore-not-found --timeout=300s || true
+
+dp-status:
+	@echo "-- CloudNativePG operator --"
+	@kubectl -n cnpg-system get deployment cnpg-controller-manager --no-headers 2>/dev/null || echo "  (operator not installed)"
+	@echo "-- data-plane workloads --"
+	@kubectl -n data-plane get pods --no-headers 2>/dev/null || echo "  (namespace absent)"
+	@echo "-- fraud-db Cluster phase --"
+	@kubectl -n data-plane get cluster fraud-db -o jsonpath='{.status.phase}{"\n"}' 2>/dev/null || echo "  (no cluster)"
+	@echo "-- services --"
+	@kubectl -n data-plane get svc --no-headers 2>/dev/null || true
+
+pg-shell:
+	@kubectl -n data-plane exec -it fraud-db-1 -c postgres -- psql -U postgres fraud_db
+
+mlflow-k8s-ui:
+	@echo "MLflow (k8s) UI: http://localhost:5001"
+	@kubectl -n data-plane port-forward svc/mlflow 5001:5000
+
+# ============================================================================
+# Slice A3b — streaming plane (Redpanda + Schema Registry + Console)
+# ============================================================================
+STREAM_INSTALL := infra/k8s/bootstrap/streaming/install.sh
+
+stream-k8s-up:
+	@command -v helm >/dev/null || { echo "helm not installed"; exit 1; }
+	bash $(STREAM_INSTALL)
+	@echo ""
+	@echo "==== stream-k8s-up complete ===="
+	@$(MAKE) --no-print-directory stream-k8s-status
+
+stream-k8s-down:
+	@kubectl -n data-plane delete job redpanda-topics-bootstrap redpanda-schemas-bootstrap --ignore-not-found || true
+	@kubectl -n data-plane delete configmap redpanda-schemas --ignore-not-found || true
+	@helm uninstall redpanda -n data-plane 2>/dev/null || true
+
+stream-k8s-status:
+	@echo "-- redpanda pods --"
+	@kubectl -n data-plane get pods -l app.kubernetes.io/name=redpanda --no-headers 2>/dev/null || echo "  (not installed)"
+	@kubectl -n data-plane get pods -l app.kubernetes.io/name=console --no-headers 2>/dev/null || true
+	@echo "-- redpanda services --"
+	@kubectl -n data-plane get svc -l app.kubernetes.io/name=redpanda --no-headers 2>/dev/null || true
+	@echo "-- topics --"
+	@kubectl -n data-plane exec redpanda-0 -c redpanda -- rpk topic list 2>/dev/null || echo "  (broker not ready)"
+	@echo "-- schema subjects --"
+	@kubectl -n data-plane exec redpanda-0 -c redpanda -- curl -sSf http://localhost:8081/subjects 2>/dev/null || echo "  (SR not ready)"
+	@echo
+
+stream-k8s-console-ui:
+	@echo "Redpanda Console: http://localhost:8080"
+	@kubectl -n data-plane port-forward svc/redpanda-console 8080:8080
+
+stream-k8s-rpk:
+	@kubectl -n data-plane exec -it redpanda-0 -c redpanda -- rpk cluster info

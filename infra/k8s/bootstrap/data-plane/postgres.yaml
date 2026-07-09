@@ -1,0 +1,55 @@
+# Dev credentials for the fraud-db Postgres cluster. Matches docker-compose defaults
+# so existing app/dbt/feast configs work unchanged when repointed at k8s Postgres.
+# For prod, replace these Secrets with ExternalSecrets / Sealed Secrets.
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: fraud-db-app
+  namespace: data-plane
+type: kubernetes.io/basic-auth
+stringData:
+  username: fraud_user
+  password: fraud_pass
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: fraud-db-superuser
+  namespace: data-plane
+type: kubernetes.io/basic-auth
+stringData:
+  username: postgres
+  password: fraud_pass
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: fraud-db
+  namespace: data-plane
+spec:
+  instances: 2
+  imageName: ghcr.io/cloudnative-pg/postgresql:15.10
+  storage:
+    size: 5Gi
+  resources:
+    requests:
+      memory: 300Mi
+      cpu: 100m
+    limits:
+      memory: 500Mi
+      cpu: 500m
+  superuserSecret:
+    name: fraud-db-superuser
+  bootstrap:
+    initdb:
+      database: fraud_db
+      owner: fraud_user
+      secret:
+        name: fraud-db-app
+      postInitApplicationSQLRefs:
+        configMapRefs:
+          - name: fraud-db-schema
+            key: 01_raw_tables.sql
+          - name: fraud-db-schema
+            key: 02_outbox.sql
