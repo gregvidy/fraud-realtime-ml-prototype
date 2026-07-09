@@ -1,0 +1,55 @@
+# k8s Job: creates the 8 topics used by the fraud stream.
+# Topic specs should stay in sync with streaming/config.py (source of truth) and
+# streaming/rpk/topics.sh (dev helper script).
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: redpanda-topics-bootstrap
+  namespace: data-plane
+spec:
+  backoffLimit: 5
+  ttlSecondsAfterFinished: 3600
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: rpk
+          image: docker.redpanda.com/redpandadata/redpanda:v24.2.7
+          env:
+            - name: RPK_BROKERS
+              value: "redpanda.data-plane.svc.cluster.local:9092"
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              # (name : partitions : retention_hours) — mirrors streaming/config.py & streaming/rpk/topics.sh
+              TOPICS=(
+                  "txn.raw.visa       :6:168"
+                  "txn.raw.mastercard :6:168"
+                  "txn.raw.amex       :3:168"
+                  "txn.raw.qris       :6:168"
+                  "txn.raw.debit      :3:168"
+                  "txn.raw.digital    :6:168"
+                  "txn.scored         :12:720"
+                  "login.events       :6:168"
+              )
+              for spec in "${TOPICS[@]}"; do
+                  IFS=':' read -r name parts hours <<< "$spec"
+                  name="$(echo "$name" | tr -d '[:space:]')"
+                  retention_ms=$(( hours * 3600 * 1000 ))
+                  if rpk topic create "$name" \
+                      --partitions "$parts" \
+                      --replicas 1 \
+                      --config "retention.ms=$retention_ms" \
+                      --config "cleanup.policy=delete" \
+                      > /dev/null 2>&1; then
+                      echo "  created  $name  (parts=$parts retention=${hours}h)"
+                  else
+                      # Already exists — align retention.ms in case it changed.
+                      rpk topic alter-config "$name" --set "retention.ms=$retention_ms" --set "cleanup.policy=delete" > /dev/null 2>&1 || true
+                      echo "  exists   $name  (parts=$parts retention=${hours}h)"
+                  fi
+              done
+              echo "── final topic list ──"
+              rpk topic list
