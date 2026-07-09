@@ -1,6 +1,6 @@
 # k8s Job: creates the 8 topics used by the fraud stream.
-# Topic array mirrors streaming/rpk/topics.sh (single source of truth is the
-# bash script; this Job's array must stay in sync with that script).
+# Topic specs should stay in sync with streaming/config.py (source of truth) and
+# streaming/rpk/topics.sh (dev helper script).
 ---
 apiVersion: batch/v1
 kind: Job
