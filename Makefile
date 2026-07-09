@@ -805,13 +805,13 @@ dp-down:
 
 dp-status:
 	@echo "-- CloudNativePG operator --"
-	@kubectl -n cnpg-system get deployment cnpg-controller-manager 2>/dev/null | tail -n +2 || echo "  (operator not installed)"
+	@kubectl -n cnpg-system get deployment cnpg-controller-manager --no-headers 2>/dev/null || echo "  (operator not installed)"
 	@echo "-- data-plane workloads --"
-	@kubectl -n data-plane get pods 2>/dev/null | tail -n +2 || echo "  (namespace absent)"
+	@kubectl -n data-plane get pods --no-headers 2>/dev/null || echo "  (namespace absent)"
 	@echo "-- fraud-db Cluster phase --"
 	@kubectl -n data-plane get cluster fraud-db -o jsonpath='{.status.phase}{"\n"}' 2>/dev/null || echo "  (no cluster)"
 	@echo "-- services --"
-	@kubectl -n data-plane get svc 2>/dev/null | tail -n +2 || true
+	@kubectl -n data-plane get svc --no-headers 2>/dev/null || true
 
 pg-shell:
 	@kubectl -n data-plane exec -it fraud-db-1 -c postgres -- psql -U postgres fraud_db
