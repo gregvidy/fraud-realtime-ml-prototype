@@ -1,0 +1,93 @@
+# KServe InferenceService — fraud scorer
+#
+# Wraps the existing FastAPI in `app/main.py` unchanged. The `/score`
+# request+response contract is preserved exactly (see `app/schemas.py`
+# — ScoreRequest / ScoreResponse).
+#
+# Why custom container (not a KServe pre-built model runtime)?
+#   The built-in runtimes (sklearn, xgboost, etc.) expose the KServe
+#   V1/V2 inference protocol, which changes the JSON shape. We need to
+#   keep POST /score identical, so we deploy the whole FastAPI image.
+#
+# Why RawDeployment mode?
+#   Default install is Serverless (Knative), but RawDeployment is:
+#     - simpler for POC (no cold-start, no scale-to-zero)
+#     - more portable to on-prem clusters that lack Knative
+#     - autoscales via a plain HPA if we add one later
+#   The annotation overrides the cluster-wide default per-Service.
+#
+# Runtime prerequisites (deferred — see B4 memory + commit body):
+#   - `fraudml/serving:v1` image built (`make serve-image-build`) AND
+#     imported into k3d (`make serve-image-import`).
+#   - Redis reachable at `redis.data-plane.svc.cluster.local:6379`
+#     (already up per A3a). Redis is NOT required at startup — the
+#     app degrades to a ClickHouse cold-fallback if Redis is down.
+#   - Model file baked into the image via `deploy/Dockerfile` COPY
+#     models/ — `MODEL_PATH=/app/models/fraud_model.pkl` by default.
+#
+# Apply with: make kserve-apply
+# Status:     make kserve-status
+# Delete:     make kserve-delete
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: fraud-scorer
+  namespace: kubeflow
+  labels:
+    app: fraudml
+    slice: B4
+  annotations:
+    # Override cluster default (Serverless / Knative) for this InferenceService.
+    serving.kserve.io/deploymentMode: RawDeployment
+spec:
+  predictor:
+    # Single custom container. `name: kserve-container` is REQUIRED — the
+    # KServe webhook rewrites this container's port + probes; any other
+    # name is treated as a sidecar and silently loses config.
+    containers:
+      - name: kserve-container
+        image: fraudml/serving:v1
+        imagePullPolicy: IfNotPresent
+        ports:
+          - containerPort: 8000
+            protocol: TCP
+        env:
+          # Model artifact — baked into the image via deploy/Dockerfile.
+          - name: MODEL_PATH
+            value: /app/models/fraud_model.pkl
+          # In-cluster Redis (data-plane namespace, per A3a).
+          - name: REDIS_HOST
+            value: redis.data-plane.svc.cluster.local
+          - name: REDIS_PORT
+            value: "6379"
+          # MLflow tracking (used for prediction logging if enabled).
+          - name: MLFLOW_TRACKING_URI
+            value: http://mlflow.data-plane.svc.cluster.local:5000
+          # Feature registry, populated by B1.
+          - name: FRAUDML_FEATURE_DEFS
+            value: /app/feature_definitions
+        # /health returns 200 once model + (optionally) Redis are checked.
+        # Model must load before we accept traffic; Redis is soft-dependency.
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 6
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 30
+          periodSeconds: 15
+          timeoutSeconds: 3
+          failureThreshold: 4
+        resources:
+          requests:
+            cpu: "500m"
+            memory: 1Gi
+          limits:
+            cpu: "2"
+            memory: 2Gi
