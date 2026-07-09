@@ -1,0 +1,136 @@
+# PIPELINE DEFINITION
+# Name: fraudml-training
+# Description: End-to-end fraud model training: build dataset → train → evaluate. Reads Feature Registry via FRAUDML_FEATURE_DEFS.
+# Inputs:
+#    config_path: str [Default: 'experiments/lgbm_v1.yaml']
+#    feature_service: str [Default: 'fraud_v1']
+components:
+  comp-build-dataset:
+    executorLabel: exec-build-dataset
+    inputDefinitions:
+      parameters:
+        config_path:
+          parameterType: STRING
+        feature_service:
+          parameterType: STRING
+  comp-evaluate:
+    executorLabel: exec-evaluate
+    inputDefinitions:
+      parameters:
+        config_path:
+          parameterType: STRING
+  comp-train:
+    executorLabel: exec-train
+    inputDefinitions:
+      parameters:
+        config_path:
+          parameterType: STRING
+        feature_service:
+          parameterType: STRING
+deploymentSpec:
+  executors:
+    exec-build-dataset:
+      container:
+        args:
+        - --config
+        - '{{$.inputs.parameters[''config_path'']}}'
+        command:
+        - python
+        - -m
+        - training.build_training_dataset
+        env:
+        - name: MLFLOW_TRACKING_URI
+          value: http://mlflow.data-plane.svc.cluster.local:5000
+        - name: FRAUDML_FEATURE_DEFS
+          value: /app/feature_definitions
+        image: fraudml/training:v1
+    exec-evaluate:
+      container:
+        args:
+        - --config
+        - '{{$.inputs.parameters[''config_path'']}}'
+        command:
+        - python
+        - -m
+        - training.evaluate_model
+        env:
+        - name: MLFLOW_TRACKING_URI
+          value: http://mlflow.data-plane.svc.cluster.local:5000
+        - name: FRAUDML_FEATURE_DEFS
+          value: /app/feature_definitions
+        image: fraudml/training:v1
+    exec-train:
+      container:
+        args:
+        - --config
+        - '{{$.inputs.parameters[''config_path'']}}'
+        command:
+        - python
+        - -m
+        - training.train_model
+        env:
+        - name: MLFLOW_TRACKING_URI
+          value: http://mlflow.data-plane.svc.cluster.local:5000
+        - name: FRAUDML_FEATURE_DEFS
+          value: /app/feature_definitions
+        image: fraudml/training:v1
+pipelineInfo:
+  description: "End-to-end fraud model training: build dataset \u2192 train \u2192\
+    \ evaluate. Reads Feature Registry via FRAUDML_FEATURE_DEFS."
+  name: fraudml-training
+root:
+  dag:
+    tasks:
+      build-dataset:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-build-dataset
+        inputs:
+          parameters:
+            config_path:
+              componentInputParameter: config_path
+            feature_service:
+              componentInputParameter: feature_service
+        taskInfo:
+          name: build_dataset
+      evaluate:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-evaluate
+        dependentTasks:
+        - train
+        inputs:
+          parameters:
+            config_path:
+              componentInputParameter: config_path
+        taskInfo:
+          name: evaluate
+      train:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-train
+        dependentTasks:
+        - build-dataset
+        inputs:
+          parameters:
+            config_path:
+              componentInputParameter: config_path
+            feature_service:
+              componentInputParameter: feature_service
+        taskInfo:
+          name: train
+  inputDefinitions:
+    parameters:
+      config_path:
+        defaultValue: experiments/lgbm_v1.yaml
+        isOptional: true
+        parameterType: STRING
+      feature_service:
+        defaultValue: fraud_v1
+        isOptional: true
+        parameterType: STRING
+schemaVersion: 2.1.0
+sdkVersion: kfp-2.7.0
