@@ -1,0 +1,62 @@
+# k8s Job: runs the SoT RBAC script (infra/clickhouse/02-init-rbac.sh) against
+# the fraud-analytics chi. The script is mounted via ConfigMap `ch-rbac-script`
+# (built at install time). Same script that docker-compose runs at container
+# start; the CLICKHOUSE_HOST env var override targets the k8s chi instead of
+# localhost.
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ch-rbac-bootstrap
+  namespace: data-plane
+spec:
+  backoffLimit: 5
+  ttlSecondsAfterFinished: 3600
+  template:
+    spec:
+      restartPolicy: OnFailure
+      volumes:
+        - name: script
+          configMap:
+            name: ch-rbac-script
+            defaultMode: 0755
+      containers:
+        - name: run
+          image: clickhouse/clickhouse-server:24.8-alpine
+          env:
+            - name: CLICKHOUSE_HOST
+              value: clickhouse-fraud-analytics.data-plane.svc.cluster.local
+            - name: CLICKHOUSE_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: fraud-analytics-passwords, key: admin}
+            - name: CLICKHOUSE_ANALYST_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: fraud-analytics-passwords, key: analyst}
+            - name: CLICKHOUSE_BI_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: fraud-analytics-passwords, key: bi}
+            - name: CLICKHOUSE_DS_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: fraud-analytics-passwords, key: ds}
+            - name: CLICKHOUSE_SW_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: fraud-analytics-passwords, key: sw}
+          volumeMounts:
+            - name: script
+              mountPath: /script
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              echo "── wait for ClickHouse to accept queries ──"
+              for i in $(seq 1 30); do
+                  clickhouse-client --host "$CLICKHOUSE_HOST" --user default \
+                      --password "$CLICKHOUSE_PASSWORD" --query "SELECT 1" >/dev/null 2>&1 && break
+                  sleep 5
+              done
+              echo "── run 02-init-rbac.sh ──"
+              sh /script/02-init-rbac.sh
+              echo "── verify: 4 RBAC users present ──"
+              clickhouse-client --host "$CLICKHOUSE_HOST" --user default \
+                  --password "$CLICKHOUSE_PASSWORD" \
+                  --query "SELECT name FROM system.users WHERE name IN ('analyst','bi_dashboard','data_scientist','service_writer') ORDER BY name FORMAT TabSeparated"

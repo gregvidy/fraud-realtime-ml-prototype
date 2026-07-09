@@ -1,4 +1,4 @@
-.PHONY: help setup infra-up infra-down seed-data reseed-data append-data _truncate-raw dbt-run feast-apply materialize train train-only train-isolated train-only-isolated start-api start-api-dev stop-api stream-events stream-producer stream-consumer score-test load-test load-test-ui clean export-to-clickhouse offline-pipeline migrate-db mlflow-ui promote-model alias-model list-models docker-stats push-artifacts deploy-aws deploy-push deploy-init deploy-stop deploy-start deploy-terminate deploy-local deploy-local-down train-docker train-docker-watch stream-docker stream-docker-stop ssm-setup ssm-shell ssm-tunnel ssm-tunnel-mlflow ssm-tunnel-locust start-remote-locust ch-up ch-down ch-logs ch-status ch-shell ch-verify-rbac stream-up stream-down stream-topics stream-schemas stream-schemas-list stream-status stream-logs stream-console stream-ch-apply stream-ch-status stream-ch-lag stream-ch-drop outbox-migrate outbox-relay outbox-produce outbox-status stream-ch-fallback-test cluster-up cluster-down cluster-status argocd-password argocd-ui kubeflow-up kubeflow-down kubeflow-status kubeflow-ui dp-up dp-down dp-status pg-shell mlflow-k8s-ui stream-k8s-up stream-k8s-down stream-k8s-status stream-k8s-console-ui stream-k8s-rpk
+.PHONY: help setup infra-up infra-down seed-data reseed-data append-data _truncate-raw dbt-run feast-apply materialize train train-only train-isolated train-only-isolated start-api start-api-dev stop-api stream-events stream-producer stream-consumer score-test load-test load-test-ui clean export-to-clickhouse offline-pipeline migrate-db mlflow-ui promote-model alias-model list-models docker-stats push-artifacts deploy-aws deploy-push deploy-init deploy-stop deploy-start deploy-terminate deploy-local deploy-local-down train-docker train-docker-watch stream-docker stream-docker-stop ssm-setup ssm-shell ssm-tunnel ssm-tunnel-mlflow ssm-tunnel-locust start-remote-locust ch-up ch-down ch-logs ch-status ch-shell ch-verify-rbac stream-up stream-down stream-topics stream-schemas stream-schemas-list stream-status stream-logs stream-console stream-ch-apply stream-ch-status stream-ch-lag stream-ch-drop outbox-migrate outbox-relay outbox-produce outbox-status stream-ch-fallback-test cluster-up cluster-down cluster-status argocd-password argocd-ui kubeflow-up kubeflow-down kubeflow-status kubeflow-ui dp-up dp-down dp-status pg-shell mlflow-k8s-ui stream-k8s-up stream-k8s-down stream-k8s-status stream-k8s-console-ui stream-k8s-rpk ch-k8s-up ch-k8s-down ch-k8s-status ch-k8s-shell ch-k8s-verify-rbac
 
 CONDA_ENV := fraud-realtime-ml
 CONDA_PREFIX := $(shell conda info --base)/envs/$(CONDA_ENV)
@@ -855,3 +855,46 @@ stream-k8s-console-ui:
 
 stream-k8s-rpk:
 	@kubectl -n data-plane exec -it redpanda-0 -c redpanda -- rpk cluster info
+
+# ============================================================================
+# Slice A3c — analytical plane (Altinity ClickHouse operator)
+# ============================================================================
+CH_INSTALL := infra/k8s/bootstrap/clickhouse/install.sh
+CH_CHI_SVC := clickhouse-fraud-analytics.data-plane.svc.cluster.local
+
+ch-k8s-up:
+	@command -v kubectl >/dev/null || { echo "kubectl not installed"; exit 1; }
+	bash $(CH_INSTALL)
+	@echo ""
+	@echo "==== ch-k8s-up complete ===="
+	@$(MAKE) --no-print-directory ch-k8s-status
+
+ch-k8s-down:
+	@kubectl -n data-plane delete job ch-schemas-bootstrap ch-rbac-bootstrap --ignore-not-found || true
+	@kubectl -n data-plane delete configmap ch-init-sql ch-rbac-script --ignore-not-found || true
+	@kubectl -n data-plane delete chi fraud-analytics --ignore-not-found --timeout=300s || true
+	@kubectl -n data-plane delete secret fraud-analytics-passwords --ignore-not-found || true
+	@kubectl delete -f infra/k8s/bootstrap/clickhouse/operator.yaml --ignore-not-found --timeout=300s || true
+
+ch-k8s-status:
+	@echo "-- Altinity operator --"
+	@kubectl -n kube-system get deployment clickhouse-operator 2>/dev/null | tail -n +2 || echo "  (operator not installed)"
+	@echo "-- chi status --"
+	@kubectl -n data-plane get chi fraud-analytics -o jsonpath='{.status.status}{"\n"}' 2>/dev/null || echo "  (no chi)"
+	@echo "-- ClickHouse pod --"
+	@kubectl -n data-plane get pods -l clickhouse.altinity.com/chi=fraud-analytics 2>/dev/null | tail -n +2 || echo "  (no pod)"
+	@echo "-- Databases --"
+	@kubectl -n data-plane exec -c clickhouse-pod chi-fraud-analytics-fraud-0-0-0 -- clickhouse-client --user default --password admin_pass --query "SHOW DATABASES FORMAT TabSeparated" 2>/dev/null | grep -E "^(raw|main|sandbox)$$" || echo "  (chi not ready)"
+	@echo "-- RBAC users --"
+	@kubectl -n data-plane exec -c clickhouse-pod chi-fraud-analytics-fraud-0-0-0 -- clickhouse-client --user default --password admin_pass --query "SELECT name FROM system.users WHERE name IN ('analyst','bi_dashboard','data_scientist','service_writer') ORDER BY name FORMAT TabSeparated" 2>/dev/null
+
+ch-k8s-shell:
+	@kubectl -n data-plane exec -it -c clickhouse-pod chi-fraud-analytics-fraud-0-0-0 -- clickhouse-client --user default --password admin_pass
+
+ch-k8s-verify-rbac:
+	@echo "-- analyst can SELECT on main.* --"
+	@kubectl -n data-plane exec -c clickhouse-pod chi-fraud-analytics-fraud-0-0-0 -- clickhouse-client --user analyst --password analyst_pass --query "SELECT 1" && echo "  ✓ analyst SELECT ok"
+	@echo "-- service_writer can INSERT on raw.* --"
+	@kubectl -n data-plane exec -c clickhouse-pod chi-fraud-analytics-fraud-0-0-0 -- clickhouse-client --user service_writer --password sw_pass --query "SELECT 1" && echo "  ✓ service_writer connect ok"
+	@echo "-- bi_dashboard rejected on sandbox (readonly) --"
+	@! kubectl -n data-plane exec -c clickhouse-pod chi-fraud-analytics-fraud-0-0-0 -- clickhouse-client --user bi_dashboard --password bi_pass --query "CREATE TABLE sandbox.forbidden (x Int) ENGINE=Memory" 2>/dev/null && echo "  ✓ bi_dashboard write rejected"

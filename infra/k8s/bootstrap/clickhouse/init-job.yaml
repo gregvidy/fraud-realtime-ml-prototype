@@ -1,0 +1,52 @@
+# k8s Job: runs infra/clickhouse/init.sql (3 databases) + raw_schema.sql (tables)
+# against the fraud-analytics chi. SQL files are mounted via ConfigMap
+# `ch-init-sql` (built at install time from the SoT files).
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ch-schemas-bootstrap
+  namespace: data-plane
+spec:
+  backoffLimit: 5
+  ttlSecondsAfterFinished: 3600
+  template:
+    spec:
+      restartPolicy: OnFailure
+      volumes:
+        - name: sql
+          configMap:
+            name: ch-init-sql
+      containers:
+        - name: run
+          image: clickhouse/clickhouse-server:24.8-alpine
+          env:
+            - name: CH_HOST
+              value: clickhouse-fraud-analytics.data-plane.svc.cluster.local
+            - name: CLICKHOUSE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: fraud-analytics-passwords
+                  key: admin
+          volumeMounts:
+            - name: sql
+              mountPath: /sql
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              CH="clickhouse-client --host $CH_HOST --user default --password $CLICKHOUSE_PASSWORD"
+              echo "── wait for ClickHouse to accept queries ──"
+              for i in $(seq 1 30); do
+                  $CH --query "SELECT 1" >/dev/null 2>&1 && break
+                  echo "  poll #$i: not ready, sleeping 5s"
+                  sleep 5
+              done
+              echo "── apply init.sql (databases) ──"
+              $CH --multiquery < /sql/init.sql
+              echo "── apply raw_schema.sql (tables) ──"
+              $CH --multiquery < /sql/raw_schema.sql
+              echo "── verify: SHOW DATABASES ──"
+              $CH --query "SHOW DATABASES FORMAT TabSeparated" | grep -E "^(raw|main|sandbox)$"
+              echo "── verify: SHOW TABLES FROM raw ──"
+              $CH --query "SHOW TABLES FROM raw FORMAT TabSeparated" | head -10

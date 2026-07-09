@@ -1,0 +1,50 @@
+# Altinity ClickHouseInstallation for the fraud-analytics cluster.
+# Single shard, single replica, 2Gi memory (dev override; plan doc's 16Gi is
+# for prod overlay). Access management enabled so the RBAC bootstrap Job can
+# CREATE USER via SQL.
+---
+apiVersion: "clickhouse.altinity.com/v1"
+kind: "ClickHouseInstallation"
+metadata:
+  name: fraud-analytics
+  namespace: data-plane
+spec:
+  configuration:
+    users:
+      # Admin user — plaintext to match docker-compose default (dev only).
+      default/password: "admin_pass"
+      default/networks/ip: ["::/0"]
+      default/access_management: "1"
+      default/named_collection_control: "1"
+      default/show_named_collections: "1"
+      default/show_named_collections_secrets: "1"
+    clusters:
+      - name: fraud
+        layout:
+          shardsCount: 1
+          replicasCount: 1
+  templates:
+    podTemplates:
+      - name: fraud-analytics-pod
+        spec:
+          containers:
+            - name: clickhouse-pod
+              image: clickhouse/clickhouse-server:24.8-alpine
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 500Mi
+                limits:
+                  cpu: 1500m
+                  memory: 2Gi
+    volumeClaimTemplates:
+      - name: chi-data
+        spec:
+          accessModes: [ReadWriteOnce]
+          resources:
+            requests:
+              storage: 10Gi
+  defaults:
+    templates:
+      podTemplate: fraud-analytics-pod
+      dataVolumeClaimTemplate: chi-data
