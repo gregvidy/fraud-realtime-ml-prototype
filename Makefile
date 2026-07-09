@@ -1,4 +1,4 @@
-.PHONY: help setup infra-up infra-down seed-data reseed-data append-data _truncate-raw dbt-run feast-apply materialize train train-only train-isolated train-only-isolated start-api start-api-dev stop-api stream-events stream-producer stream-consumer score-test load-test load-test-ui clean export-to-clickhouse offline-pipeline migrate-db mlflow-ui promote-model alias-model list-models docker-stats push-artifacts deploy-aws deploy-push deploy-init deploy-stop deploy-start deploy-terminate deploy-local deploy-local-down train-docker train-docker-watch stream-docker stream-docker-stop ssm-setup ssm-shell ssm-tunnel ssm-tunnel-mlflow ssm-tunnel-locust start-remote-locust ch-up ch-down ch-logs ch-status ch-shell ch-verify-rbac stream-up stream-down stream-topics stream-schemas stream-schemas-list stream-status stream-logs stream-console stream-ch-apply stream-ch-status stream-ch-lag stream-ch-drop outbox-migrate outbox-relay outbox-produce outbox-status stream-ch-fallback-test cluster-up cluster-down cluster-status argocd-password argocd-ui kubeflow-up kubeflow-down kubeflow-status kubeflow-ui dp-up dp-down dp-status pg-shell mlflow-k8s-ui stream-k8s-up stream-k8s-down stream-k8s-status stream-k8s-console-ui stream-k8s-rpk ch-k8s-up ch-k8s-down ch-k8s-status ch-k8s-shell ch-k8s-verify-rbac fraudml-list fraudml-validate fraudml-describe fraudml-services fraudml-test
+.PHONY: help setup infra-up infra-down seed-data reseed-data append-data _truncate-raw dbt-run feast-apply materialize train train-only train-isolated train-only-isolated start-api start-api-dev stop-api stream-events stream-producer stream-consumer score-test load-test load-test-ui clean export-to-clickhouse offline-pipeline migrate-db mlflow-ui promote-model alias-model list-models docker-stats push-artifacts deploy-aws deploy-push deploy-init deploy-stop deploy-start deploy-terminate deploy-local deploy-local-down train-docker train-docker-watch stream-docker stream-docker-stop ssm-setup ssm-shell ssm-tunnel ssm-tunnel-mlflow ssm-tunnel-locust start-remote-locust ch-up ch-down ch-logs ch-status ch-shell ch-verify-rbac stream-up stream-down stream-topics stream-schemas stream-schemas-list stream-status stream-logs stream-console stream-ch-apply stream-ch-status stream-ch-lag stream-ch-drop outbox-migrate outbox-relay outbox-produce outbox-status stream-ch-fallback-test cluster-up cluster-down cluster-status argocd-password argocd-ui kubeflow-up kubeflow-down kubeflow-status kubeflow-ui dp-up dp-down dp-status pg-shell mlflow-k8s-ui stream-k8s-up stream-k8s-down stream-k8s-status stream-k8s-console-ui stream-k8s-rpk ch-k8s-up ch-k8s-down ch-k8s-status ch-k8s-shell ch-k8s-verify-rbac fraudml-list fraudml-validate fraudml-describe fraudml-services fraudml-test pipeline-compile pipeline-test pipeline-image-build pipeline-image-import pipeline-submit
 
 CONDA_ENV := fraud-realtime-ml
 CONDA_PREFIX := $(shell conda info --base)/envs/$(CONDA_ENV)
@@ -918,3 +918,35 @@ fraudml-services:
 
 fraudml-test:
 	@$(CONDA_PREFIX)/bin/pytest tests/test_feature_registry.py -v
+
+# =========================================================================
+# B2: KFP training pipeline
+# =========================================================================
+
+TRAINING_IMAGE ?= fraudml/training:v1
+K3D_CLUSTER    ?= fraud-platform
+KFP_HOST       ?= http://localhost:8888
+
+pipeline-compile: ## Compile training pipeline → fraudml/pipelines/training_pipeline.yaml
+	@$(CONDA_PREFIX)/bin/python -m fraudml.pipelines.compile
+
+pipeline-test: ## Run KFP pipeline unit tests
+	@$(CONDA_PREFIX)/bin/pytest tests/test_training_pipeline.py -v
+
+pipeline-image-build: ## Build training image ($(TRAINING_IMAGE)) via deploy/Dockerfile.train
+	docker build -f deploy/Dockerfile.train -t $(TRAINING_IMAGE) .
+
+pipeline-image-import: ## Import training image into k3d cluster
+	k3d image import $(TRAINING_IMAGE) --cluster $(K3D_CLUSTER)
+
+pipeline-submit: ## Submit compiled pipeline to KFP API (requires port-forward or KFP_HOST)
+	@echo "Submitting to KFP at $(KFP_HOST)"
+	@$(CONDA_PREFIX)/bin/python -c "\
+import kfp; \
+c = kfp.Client(host='$(KFP_HOST)'); \
+r = c.create_run_from_pipeline_package( \
+    'fraudml/pipelines/training_pipeline.yaml', \
+    arguments={}, \
+    experiment_name='fraudml-training', \
+); \
+print(f'Submitted: run_id={r.run_id}')"
