@@ -839,10 +839,10 @@ stream-k8s-down:
 
 stream-k8s-status:
 	@echo "-- redpanda pods --"
-	@kubectl -n data-plane get pods -l app.kubernetes.io/name=redpanda 2>/dev/null | tail -n +2 || echo "  (not installed)"
-	@kubectl -n data-plane get pods -l app.kubernetes.io/name=console 2>/dev/null | tail -n +2 || true
+	@kubectl -n data-plane get pods -l app.kubernetes.io/name=redpanda --no-headers 2>/dev/null || echo "  (not installed)"
+	@kubectl -n data-plane get pods -l app.kubernetes.io/name=console --no-headers 2>/dev/null || true
 	@echo "-- redpanda services --"
-	@kubectl -n data-plane get svc -l app.kubernetes.io/name=redpanda 2>/dev/null | tail -n +2 || true
+	@kubectl -n data-plane get svc -l app.kubernetes.io/name=redpanda --no-headers 2>/dev/null || true
 	@echo "-- topics --"
 	@kubectl -n data-plane exec redpanda-0 -c redpanda -- rpk topic list 2>/dev/null || echo "  (broker not ready)"
 	@echo "-- schema subjects --"
